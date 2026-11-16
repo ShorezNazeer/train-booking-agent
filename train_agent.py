@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from groq import Groq
 
 import availability as av
+import segments as seg
 import train_tools as tools
 from agent_patterns import call_groq_with_backoff, compress_if_needed, reflect_on_result
 
@@ -56,12 +57,19 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "check_seats",
-            "description": "Check seats left on one train for a date, per class (SL, 3A, 2A).",
+            "description": (
+                "Look inside one train. Shows which classes have seats from one stop to "
+                "another, where each class has seats along the way, and how to cover the "
+                "trip by changing class if no single class does. Leave out from_station "
+                "and to_station to check the train's whole run."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "train_number": {"type": "string"},
                     "travel_date": {"type": "string", "description": "YYYY-MM-DD, the date you board this train"},
+                    "from_station": {"type": "string", "description": "Where you board (name or code). Optional."},
+                    "to_station": {"type": "string", "description": "Where you get off (name or code). Optional."},
                     "travel_class": {"type": "string", "enum": ["SL", "3A", "2A"]},
                 },
                 "required": ["train_number", "travel_date"],
@@ -74,7 +82,9 @@ TOOL_SCHEMAS = [
             "name": "book_ticket",
             "description": (
                 "Book one or more connected legs for one passenger. Requires user "
-                "confirmation. Pass the legs exactly as returned by search_trains."
+                "confirmation. Pass the legs exactly as returned by search_trains. To ride "
+                "one train in different classes, pass one leg per stretch of its class_plan, "
+                "each with its own travel_class."
             ),
             "parameters": {
                 "type": "object",
@@ -88,14 +98,15 @@ TOOL_SCHEMAS = [
                                 "from_code": {"type": "string"},
                                 "to_code": {"type": "string"},
                                 "date": {"type": "string", "description": "YYYY-MM-DD, the date you board this train"},
+                                "travel_class": {"type": "string", "enum": ["SL", "3A", "2A"], "description": "Class for this leg. Optional if a default class is given."},
                             },
                             "required": ["train", "from_code", "to_code", "date"],
                         },
                     },
-                    "travel_class": {"type": "string", "enum": ["SL", "3A", "2A"]},
+                    "travel_class": {"type": "string", "enum": ["SL", "3A", "2A"], "description": "Default class for legs that do not set their own."},
                     "passenger_name": {"type": "string"},
                 },
-                "required": ["legs", "travel_class", "passenger_name"],
+                "required": ["legs", "passenger_name"],
             },
         },
     },
@@ -154,6 +165,16 @@ Rules:
 8. Bookings here are simulated and the timetable is an older snapshot that assumes
    every train runs daily. Mention this briefly after the first booking.
 9. Do not call tools for simple chat. When a task is done, give a short summary.
+10. Seats can differ along a train's route. In search_trains results, a leg's
+   `seats` lists the classes that cover the whole leg. If it is empty and
+   `needs_class_change` is true, `class_plan` lists stretches of the same train,
+   each in its own class (for example SL from Lucknow to Kanpur, then 3A from
+   Kanpur to Delhi). Offer this as an option, say plainly that the passenger would
+   change coach at the change station, and prefer a single class when one exists.
+11. To book a class plan, call book_ticket once with one leg per stretch, each with
+   its own travel_class, from_code, to_code and date exactly as given in class_plan.
+   To look inside one train, call check_seats with from_station and to_station: its
+   `stretches` show where each class has seats, and `class_plan` how to cover the trip.
 """
 
 
@@ -174,6 +195,25 @@ def force_sold_out(from_text, to_text):
     for train in trains:
         av.FORCED_SOLD_OUT.add((train, None))
     print(f"[demo] {len(trains)} direct trains from {from_text} to {to_text} are now sold out.")
+
+
+def force_split_demo(from_text, to_text):
+    """Demo helper: on every direct train for a route, sell out SL on the second
+    half, 3A on the first half and 2A everywhere, so only a class change works."""
+    tt = tools._timetable()
+    src = tt.resolve_station(from_text)
+    dst = tt.resolve_station(to_text)
+    if not src or not dst:
+        print("[demo] I couldn't find one of those stations.")
+        return
+    rides = tt.direct_trains(src, dst)
+    for r in rides:
+        mid = (r["from_seq"] + r["to_seq"]) // 2
+        for s in range(r["from_seq"], r["to_seq"]):
+            seg.FORCED_SEGMENT_SOLD_OUT.add((r["train"], "2A", s))
+            seg.FORCED_SEGMENT_SOLD_OUT.add((r["train"], "SL" if s >= mid else "3A", s))
+    print(f"[demo] {len(rides)} direct trains from {from_text} to {to_text} now have "
+          "SL only on the first half and 3A only on the second half.")
 
 
 def run_agent(messages: list, task: str) -> list:
@@ -228,12 +268,21 @@ if __name__ == "__main__":
     messages = [{"role": "system", "content": build_system_prompt()}]
     print("Train booking assistant. Type 'quit' to exit.")
     print("Demo helper: /soldout Lucknow > Delhi  (forces direct trains sold out)")
+    print("Demo helper: /splitdemo Lucknow > Delhi  (only a class change gets you a seat)")
     while True:
         task = input("\nWhere would you like to travel? (or 'quit')\n> ")
         text = task.strip()
         if text.lower() in ("quit", "exit"):
             break
         if not text:
+            continue
+        if text.lower().startswith("/splitdemo"):
+            parts = text[len("/splitdemo"):].split(">")
+            if len(parts) == 2 and parts[0].strip() and parts[1].strip():
+                force_split_demo(parts[0].strip(), parts[1].strip())
+                messages.append({"role": "user", "content": "[notice] Seat availability has changed since your last search. Earlier search results are out of date, so search again before answering."})
+            else:
+                print("[demo] usage: /splitdemo Lucknow > Delhi")
             continue
         if text.lower().startswith("/soldout"):
             parts = text[len("/soldout"):].split(">")

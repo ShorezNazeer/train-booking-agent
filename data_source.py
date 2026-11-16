@@ -111,6 +111,8 @@ class Timetable:
                             "depart": board.dep,
                             "arrive": alight.arr,
                             "duration_min": alight.arr - board.dep,
+                            "from_seq": board.seq,
+                            "to_seq": alight.seq,
                         })
                         break
         return sorted(results, key=lambda r: r["depart"] % 1440)
