@@ -84,14 +84,55 @@ python build_db.py
 
 This keeps the trains that stop at several of the 40 busiest stations: about 1,100 trains and 220,000 stops, stored in `data/trains.db`. You can change `TOP_N_STATIONS` and `MIN_MAJOR_STOPS` at the top of `build_db.py`.
 
-Run the agent (it uses [Groq](https://console.groq.com/)):
+Run the CLI agent (it uses [Groq](https://console.groq.com/)):
 
 ```bash
 export GROQ_API_KEY=your_key_here
 python train_agent.py
 ```
 
-In the chat, `/soldout Lucknow > Delhi` forces every direct train on that route to be sold out, so you can watch the rerouting. It is a demo helper, not a real feature.
+In the CLI chat, `/soldout Lucknow > Delhi` forces every direct train on that route to be sold out, and `/splitdemo Lucknow > Delhi` forces a mid-route class change.
+
+## Web Application & FastAPI Backend
+
+Run the web server locally:
+
+```bash
+export GROQ_API_KEY=your_key_here
+uvicorn api:app --reload --port 8000
+# or
+python api.py
+```
+
+Open `http://localhost:8000` to access the web frontend:
+- **Station autocomplete**: Debounced matching for all stations and major city hubs from `Timetable`.
+- **Side-by-side AI chat assistant**: Chat in plain English using the Groq agent while keeping `GROQ_API_KEY` secure on the server.
+- **Visual segmented bars**: Displays mid-route coach/class changes (`class_plan`) with station stretches, seat numbers, and coach switch notices.
+- **Layover badges**: Multi-train connections show formatted transfer badges with layover times and station details.
+- **3 One-click demo buttons**: Direct train, Mid-route class change, and Multi-train transfer presets.
+- **Booking modal**: Instant modal booking passing `confirm=lambda _: True`.
+
+### API Endpoints
+
+- `GET /api/search` / `POST /api/search`: Route planning and journey search
+- `GET /api/check-seats` / `POST /api/check-seats`: Per-train segment availability and class plan
+- `POST /api/book`: Simulated ticket booking (`confirm=lambda _: True`)
+- `GET /api/bookings`: List active confirmed bookings
+- `POST /api/cancel`: Cancel booking by PNR
+- `GET /api/stations?q=...`: Station and city autocomplete
+- `POST /api/chat`: Conversational agent turn with Groq LLM
+- `POST /api/demo/direct`, `split`, `soldout`, `reset`: Interactive demo presets
+
+## Deploying to Render
+
+Deploy this repository as a single Web Service on [Render](https://render.com):
+
+1. **Build Command**: `pip install -r requirements.txt`
+2. **Start Command**: `uvicorn api:app --host 0.0.0.0 --port $PORT`
+   (or automatically recognized from the included `Procfile`)
+3. **Environment Variables**:
+   - `GROQ_API_KEY`: Your Groq API key
+
 
 ## Tests
 

@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RailEngine AI — Modern Train Booking & Intelligence</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+</head>
+<body>
+
+  <!-- Top Navigation Bar -->
+  <header class="navbar">
+    <a href="/" class="nav-brand">
+      <div class="brand-icon">🚆</div>
+      <div>
+        <span class="brand-title">RailEngine AI</span>
+        <span class="brand-badge">Simulated Engine</span>
+      </div>
+    </a>
+
+    <div class="nav-actions">
+      <button id="resetDemoBtn" class="btn btn-secondary btn-sm" title="Clear all simulated sold-out/segment overrides">
+        🔄 Reset State
+      </button>
+      <button id="myBookingsBtn" class="btn btn-secondary btn-sm">
+        🎟️ My Bookings <span id="activeBookingsCount" class="badge-count">0</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main App Layout: Responsive Grid (Search & Results on Left, AI Assistant on Right) -->
+  <main class="app-container">
+
+    <!-- Left Column: Search Form, Demo Buttons, and Results -->
+    <section class="main-column">
+
+      <!-- Status Toast Notification Banner -->
+      <div id="statusToastBanner" class="alert-banner info" style="display: none;"></div>
+
+      <!-- 3 One-Click Demo Buttons -->
+      <div class="demo-banner">
+        <div class="demo-header">
+          <div class="demo-title">
+            <span>⚡ Interactive Demonstration Scenarios</span>
+          </div>
+          <span class="demo-subtitle">One-click presets showcasing engine routing capabilities</span>
+        </div>
+
+        <div class="demo-buttons-grid">
+          <!-- Demo 1: Direct -->
+          <div id="demoDirectBtn" class="demo-btn-card">
+            <div class="demo-card-top">
+              <span class="demo-card-title">Direct Train</span>
+              <span class="demo-tag tag-direct">Direct</span>
+            </div>
+            <p class="demo-card-desc">Delhi → Kanpur: single train, uninterrupted single-class seats.</p>
+          </div>
+
+          <!-- Demo 2: Mid-Route Class Change -->
+          <div id="demoSplitBtn" class="demo-btn-card">
+            <div class="demo-card-top">
+              <span class="demo-card-title">Mid-Route Class Change</span>
+              <span class="demo-tag tag-split">Coach Switch</span>
+            </div>
+            <p class="demo-card-desc">Lucknow → Delhi: SL on first half, 3A on second half with visual segmented bar.</p>
+          </div>
+
+          <!-- Demo 3: Multi-Train Transfer -->
+          <div id="demoSoldoutBtn" class="demo-btn-card">
+            <div class="demo-card-top">
+              <span class="demo-card-title">Multi-Train Transfer</span>
+              <span class="demo-tag tag-transfer">Transfers</span>
+            </div>
+            <p class="demo-card-desc">Lucknow → Delhi: forces direct sold out, rerouting via transfers & layovers.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Search Bar with Station Autocomplete -->
+      <div class="search-card">
+        <form id="searchForm">
+          <div class="search-form-grid">
+
+            <!-- From Station with Autocomplete -->
+            <div class="form-group">
+              <label class="form-label" for="fromStationInput">
+                <span>📍 From Station</span>
+              </label>
+              <div class="input-wrapper">
+                <span class="input-icon">🚉</span>
+                <input
+                  type="text"
+                  id="fromStationInput"
+                  class="form-input"
+                  placeholder="City, station name or code"
+                  value="Lucknow"
+                  autocomplete="off"
+                  required
+                />
+              </div>
+              <div id="fromStationDropdown" class="autocomplete-dropdown"></div>
+            </div>
+
+            <!-- Swap Stations Button -->
+            <div class="swap-btn-container">
+              <button type="button" id="swapStationsBtn" class="swap-btn" title="Swap Origin and Destination">
+                ⇄
+              </button>
+            </div>
+
+            <!-- To Station with Autocomplete -->
+            <div class="form-group">
+              <label class="form-label" for="toStationInput">
+                <span>🎯 To Station</span>
+              </label>
+              <div class="input-wrapper">
+                <span class="input-icon">🏁</span>
+                <input
+                  type="text"
+                  id="toStationInput"
+                  class="form-input"
+                  placeholder="City, station name or code"
+                  value="Delhi"
+                  autocomplete="off"
+                  required
+                />
+              </div>
+              <div id="toStationDropdown" class="autocomplete-dropdown"></div>
+            </div>
+
+            <!-- Travel Date -->
+            <div class="form-group">
+              <label class="form-label" for="travelDateInput">
+                <span>📅 Date</span>
+              </label>
+              <input
+                type="date"
+                id="travelDateInput"
+                class="form-input no-icon"
+                required
+              />
+            </div>
+
+            <!-- Earliest Departure Time -->
+            <div class="form-group">
+              <label class="form-label" for="earliestInput">
+                <span>⏰ Earliest</span>
+              </label>
+              <select id="earliestInput" class="form-input no-icon">
+                <option value="00:00" selected>Anytime (00:00)</option>
+                <option value="06:00">Morning (06:00)</option>
+                <option value="12:00">Afternoon (12:00)</option>
+                <option value="18:00">Evening (18:00)</option>
+              </select>
+            </div>
+
+            <!-- Ranking / Sort -->
+            <div class="form-group">
+              <label class="form-label" for="sortInput">
+                <span>📊 Sort By</span>
+              </label>
+              <select id="sortInput" class="form-input no-icon">
+                <option value="fastest" selected>Fastest</option>
+                <option value="earliest">Earliest Departure</option>
+                <option value="fewest_changes">Fewest Changes</option>
+              </select>
+            </div>
+
+            <!-- Submit Search Button -->
+            <div class="form-group">
+              <label class="form-label">&nbsp;</label>
+              <button type="submit" id="searchSubmitBtn" class="btn btn-primary" style="height: 38px;">
+                🔍 Search Trains
+              </button>
+            </div>
+
+          </div>
+
+          <!-- Quick Date Chips -->
+          <div class="quick-date-row">
+            <span style="font-size:0.75rem; color:var(--text-muted); font-weight:600;">Quick Dates:</span>
+            <button type="button" class="quick-chip" data-days="0">Today</button>
+            <button type="button" class="quick-chip active" data-days="1">Tomorrow</button>
+            <button type="button" class="quick-chip" data-days="2">+2 Days</button>
+            <button type="button" class="quick-chip" data-days="7">+1 Week</button>
+          </div>
+        </form>
+      </div>
+
+      <!-- Search Results Header -->
+      <div class="results-header">
+        <h2 id="resultsCount" class="results-count">Searching routes...</h2>
+      </div>
+
+      <!-- Journeys Container (Rendered dynamically) -->
+      <div id="journeysContainer" class="journeys-list">
+        <!-- Rendered by app.js -->
+      </div>
+
+    </section>
+
+    <!-- Right Column: Side-by-Side AI Chat Assistant -->
+    <aside class="sidebar-column">
+      <div class="chat-container">
+        <!-- Chat Header -->
+        <div class="chat-header">
+          <div class="chat-agent-info">
+            <div class="agent-avatar">🤖</div>
+            <div>
+              <div class="agent-name">Groq Train Assistant</div>
+              <div style="font-size:0.7rem; color:var(--text-muted); display:flex; align-items:center; gap:0.35rem;">
+                <span class="agent-status-dot"></span> Powered by gpt-oss-120b
+              </div>
+            </div>
+          </div>
+          <button class="btn btn-secondary btn-sm" onclick="state.chatHistory=[]; document.getElementById('chatMessages').innerHTML=''; appendChatMessage('agent', 'Hello! How can I help you book or search for train journeys today?');" title="Clear conversation">
+            Reset Chat
+          </button>
+        </div>
+
+        <!-- Chat Messages Thread -->
+        <div id="chatMessages" class="chat-messages">
+          <div class="chat-msg agent">
+            <div class="msg-bubble">
+              <p>👋 <strong>Welcome to RailEngine AI!</strong></p>
+              <p>I can find direct trains, plan alternative routes with transfers, check seats inside coaches, and book or cancel tickets for you.</p>
+              <p>Try asking: <em>"Find the fastest train to Delhi tomorrow evening"</em> or click one of the quick suggestions below.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Chat Prompt Suggestions -->
+        <div class="chat-suggestions">
+          <button class="suggestion-chip" data-prompt="Find fastest trains from Lucknow to Delhi tomorrow evening">
+            ⚡ Fastest to Delhi
+          </button>
+          <button class="suggestion-chip" data-prompt="Show my active bookings">
+            🎟️ Show my bookings
+          </button>
+          <button class="suggestion-chip" data-prompt="Check seat availability for train 12003 tomorrow">
+            🔍 Check 12003 seats
+          </button>
+          <button class="suggestion-chip" data-prompt="Are there routes with transfers from Lucknow to Delhi?">
+            🔄 Transfers option
+          </button>
+        </div>
+
+        <!-- Chat Input Form -->
+        <form id="chatForm" class="chat-input-row">
+          <input
+            type="text"
+            id="chatInput"
+            class="chat-input"
+            placeholder="Ask anything or request a booking..."
+            autocomplete="off"
+            required
+          />
+          <button type="submit" id="chatSendBtn" class="btn btn-primary btn-sm">
+            Send
+          </button>
+        </form>
+      </div>
+    </aside>
+
+  </main>
+
+  <!-- Booking Confirmation Modal -->
+  <div id="bookingModal" class="modal-overlay" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 class="modal-title">Confirm Ticket Booking</h3>
+        <button class="modal-close-btn" onclick="closeBookingModal()">✕</button>
+      </div>
+      <div id="bookingModalBody" class="modal-body">
+        <!-- Rendered dynamically by app.js -->
+      </div>
+      <div id="bookingModalFooter" class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeBookingModal()">Cancel</button>
+        <button id="confirmBookingBtn" class="btn btn-success" onclick="confirmBookingSubmit()">
+          Confirm Booking
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Active Bookings List Modal -->
+  <div id="bookingsListModal" class="modal-overlay" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 class="modal-title">Active Simulated Bookings</h3>
+        <button class="modal-close-btn" onclick="closeBookingsModal()">✕</button>
+      </div>
+      <div id="bookingsListContainer" class="modal-body">
+        <!-- Rendered dynamically -->
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeBookingsModal()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Generic Inspection Modal (Stops & Seat Stretches) -->
+  <div id="genericModal" class="modal-overlay" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="genericModalTitle" class="modal-title">Train Inspection</h3>
+        <button class="modal-close-btn" onclick="closeGenericModal()">✕</button>
+      </div>
+      <div id="genericModalBody" class="modal-body">
+        <!-- Rendered dynamically -->
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeGenericModal()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Frontend Logic -->
+  <script src="/static/app.js"></script>
+</body>
+</html>

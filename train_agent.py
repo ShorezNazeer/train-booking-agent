@@ -15,7 +15,8 @@ MODEL = "openai/gpt-oss-120b"
 MAX_ITERATIONS = 8
 TZ = "Asia/Kolkata"
 
-client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+_api_key = os.environ.get("GROQ_API_KEY")
+client = Groq(api_key=_api_key) if _api_key else None
 
 TOOL_IMPL = {
     "search_trains": tools.search_trains,
@@ -217,6 +218,13 @@ def force_split_demo(from_text, to_text):
 
 
 def run_agent(messages: list, task: str) -> list:
+    global client
+    if client is None:
+        key = os.environ.get("GROQ_API_KEY")
+        if not key:
+            raise RuntimeError("GROQ_API_KEY environment variable is not set.")
+        client = Groq(api_key=key)
+
     # Refresh the date/time on every task so "tomorrow" is always correct
     messages[0] = {"role": "system", "content": build_system_prompt()}
     messages.append({"role": "user", "content": task})
