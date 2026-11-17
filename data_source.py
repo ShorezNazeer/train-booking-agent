@@ -38,6 +38,12 @@ class Stop(NamedTuple):
 
 class Timetable:
     def __init__(self, db_path: Path = DB_PATH):
+        db_path = Path(db_path)
+        if not db_path.exists() or db_path.stat().st_size == 0:
+            raise FileNotFoundError(
+                f"Timetable database not found or empty at {db_path}. "
+                "Ensure data/trains.db is tracked in git and present."
+            )
         conn = sqlite3.connect(db_path)
         self._stations = {
             code: name

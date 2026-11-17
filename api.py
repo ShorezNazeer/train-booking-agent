@@ -6,12 +6,14 @@ from pathlib import Path
 from typing import Any, List, Optional
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from groq import Groq
 from pydantic import BaseModel, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 import availability as av
 import segments as seg
@@ -37,6 +39,25 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Global exception handler returning {"detail": str(exc)} for unhandled server errors
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    if isinstance(exc, (HTTPException, StarletteHTTPException)):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+        )
+    if isinstance(exc, RequestValidationError):
+        return JSONResponse(
+            status_code=422,
+            content={"detail": exc.errors()},
+        )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc)},
+    )
 
 
 # ---------- Pydantic Schemas ----------
@@ -243,6 +264,7 @@ def cancel_ticket_delete(pnr: str):
 
 
 # ---------- One-Click Demo Endpoints ----------
+@app.get("/api/demo/direct")
 @app.post("/api/demo/direct")
 def demo_direct():
     av.FORCED_SOLD_OUT.clear()
@@ -258,6 +280,7 @@ def demo_direct():
     }
 
 
+@app.get("/api/demo/split")
 @app.post("/api/demo/split")
 def demo_split():
     av.FORCED_SOLD_OUT.clear()
@@ -274,6 +297,7 @@ def demo_split():
     }
 
 
+@app.get("/api/demo/soldout")
 @app.post("/api/demo/soldout")
 def demo_soldout():
     av.FORCED_SOLD_OUT.clear()
@@ -290,6 +314,7 @@ def demo_soldout():
     }
 
 
+@app.get("/api/demo/reset")
 @app.post("/api/demo/reset")
 def demo_reset():
     av.FORCED_SOLD_OUT.clear()
@@ -444,6 +469,10 @@ def serve_index():
     if index_file.exists():
         return FileResponse(index_file)
     return {"message": "Frontend index.html is being prepared."}
+
+
+# Mount root static files fallback AFTER all /api/* routes
+app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="frontend")
 
 
 if __name__ == "__main__":

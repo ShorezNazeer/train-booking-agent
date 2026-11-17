@@ -50,6 +50,32 @@ function formatMinutes(min) {
   return `${h}h ${m}m`;
 }
 
+// Helper: Check res.ok and read text before calling JSON.parse so real server errors surface clearly
+async function parseJsonResponse(res) {
+  const text = await res.text();
+  if (!res.ok) {
+    let errDetail = text;
+    try {
+      const errJson = JSON.parse(text);
+      if (errJson.detail) {
+        errDetail = typeof errJson.detail === "string" ? errJson.detail : JSON.stringify(errJson.detail);
+      } else if (errJson.reply) {
+        errDetail = errJson.reply;
+      } else if (errJson.reason) {
+        errDetail = errJson.reason;
+      } else if (errJson.message) {
+        errDetail = errJson.message;
+      }
+    } catch (_) {}
+    throw new Error(errDetail || `Request failed (${res.status})`);
+  }
+  try {
+    return JSON.parse(text);
+  } catch (parseErr) {
+    throw new Error(`Invalid JSON response: ${text}`);
+  }
+}
+
 // Initial Setup
 document.addEventListener("DOMContentLoaded", () => {
   setupEventListeners();
@@ -158,7 +184,7 @@ function setupAutocomplete(inputId, dropdownId, onSelect) {
     debounceTimer = setTimeout(async () => {
       try {
         const res = await fetch(`/api/stations?q=${encodeURIComponent(query)}`);
-        const stations = await res.json();
+        const stations = await parseJsonResponse(res);
         renderDropdown(dropdown, stations, (selected) => {
           input.value = selected.query_val || selected.code;
           onSelect(input.value);
@@ -172,13 +198,17 @@ function setupAutocomplete(inputId, dropdownId, onSelect) {
 
   input.addEventListener("focus", async () => {
     if (!dropdown.classList.contains("show")) {
-      const res = await fetch(`/api/stations?q=${encodeURIComponent(input.value.trim())}`);
-      const stations = await res.json();
-      renderDropdown(dropdown, stations, (selected) => {
-        input.value = selected.query_val || selected.code;
-        onSelect(input.value);
-        dropdown.classList.remove("show");
-      });
+      try {
+        const res = await fetch(`/api/stations?q=${encodeURIComponent(input.value.trim())}`);
+        const stations = await parseJsonResponse(res);
+        renderDropdown(dropdown, stations, (selected) => {
+          input.value = selected.query_val || selected.code;
+          onSelect(input.value);
+          dropdown.classList.remove("show");
+        });
+      } catch (err) {
+        console.error("Autocomplete fetch error:", err);
+      }
     }
   });
 
@@ -221,7 +251,7 @@ async function triggerDemo(type) {
   try {
     showToast("info", `Activating ${type.toUpperCase()} demo scenario...`);
     const res = await fetch(`/api/demo/${type}`, { method: "POST" });
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (data.success) {
       document.getElementById("fromStationInput").value = data.from_station;
       document.getElementById("toStationInput").value = data.to_station;
@@ -247,7 +277,8 @@ async function triggerDemo(type) {
 
 async function resetDemos() {
   try {
-    await fetch("/api/demo/reset", { method: "POST" });
+    const res = await fetch("/api/demo/reset", { method: "POST" });
+    await parseJsonResponse(res);
     document.querySelectorAll(".demo-btn-card").forEach((card) => card.classList.remove("active"));
     state.activeDemo = null;
     showToast("info", "Demo simulation overrides cleared.");
@@ -300,7 +331,7 @@ async function executeSearch() {
     });
 
     const res = await fetch(`/api/search?${params.toString()}`);
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
 
     state.isSearching = false;
     if (searchBtn) {
@@ -660,7 +691,7 @@ async function confirmBookingSubmit() {
       }),
     });
 
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (submitBtn) {
       submitBtn.disabled = false;
       submitBtn.innerText = "Confirm Booking";
@@ -722,7 +753,7 @@ function renderBookingSuccess(booking) {
 async function refreshBookings() {
   try {
     const res = await fetch("/api/bookings");
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (data.success && Array.isArray(data.bookings)) {
       state.activeBookings = data.bookings;
       const countEl = document.getElementById("activeBookingsCount");
@@ -788,7 +819,7 @@ async function cancelBooking(pnr) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ pnr: pnr }),
     });
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     if (data.success) {
       alert(`Booking ${pnr} has been cancelled.`);
       await refreshBookings();
@@ -811,7 +842,7 @@ async function inspectTrainDetails(train, date, from, to) {
       to_station: to || "",
     });
     const res = await fetch(`/api/check-seats?${params.toString()}`);
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
 
     if (!data.success) {
       alert(`Seat check: ${data.reason}`);
@@ -907,7 +938,7 @@ async function handleChatSubmit() {
       }),
     });
 
-    const data = await res.json();
+    const data = await parseJsonResponse(res);
     removeChatThinking(thinkingId);
 
     state.isChatting = false;

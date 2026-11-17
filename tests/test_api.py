@@ -126,6 +126,7 @@ def test_booking_and_cancellation_flow():
 
 
 def test_demo_endpoints():
+    # Test POST
     r1 = client.post("/api/demo/direct")
     assert r1.status_code == 200
     assert r1.json()["type"] == "direct"
@@ -141,6 +142,52 @@ def test_demo_endpoints():
     r4 = client.post("/api/demo/reset")
     assert r4.status_code == 200
     assert r4.json()["success"] is True
+
+    # Test GET
+    g1 = client.get("/api/demo/direct")
+    assert g1.status_code == 200
+    assert g1.json()["type"] == "direct"
+
+    g2 = client.get("/api/demo/split")
+    assert g2.status_code == 200
+    assert g2.json()["type"] == "split"
+
+    g3 = client.get("/api/demo/soldout")
+    assert g3.status_code == 200
+    assert g3.json()["type"] == "soldout"
+
+    g4 = client.get("/api/demo/reset")
+    assert g4.status_code == 200
+    assert g4.json()["success"] is True
+
+
+def test_global_exception_handler(monkeypatch):
+    from fastapi.testclient import TestClient
+    from api import app
+    import train_tools as tools
+
+    safe_client = TestClient(app, raise_server_exceptions=False)
+
+    # Trigger a 404
+    r_404 = safe_client.get("/api/nonexistent-endpoint")
+    assert r_404.status_code == 404
+    assert "detail" in r_404.json()
+
+    # Trigger a 422
+    r_422 = safe_client.post("/api/book", json={"bad_field": 123})
+    assert r_422.status_code == 422
+    assert "detail" in r_422.json()
+
+    # Trigger an unhandled error in a real route to verify 500 JSON response format
+    def mock_fail(**kwargs):
+        raise RuntimeError("Simulated database crash")
+
+    monkeypatch.setattr(tools, "search_trains", mock_fail)
+
+    r_500 = safe_client.get(f"/api/search?from_station=Delhi&to_station=Kanpur&travel_date={tomorrow}")
+    assert r_500.status_code == 500
+    assert "application/json" in r_500.headers.get("content-type", "")
+    assert r_500.json() == {"detail": "Simulated database crash"}
 
 
 def test_chat_assistant():
