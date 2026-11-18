@@ -201,3 +201,97 @@ def test_chat_assistant():
     assert "reply" in data
     assert len(data["reply"]) > 0
     assert isinstance(data["tool_calls"], list)
+
+
+def test_session_booking_isolation():
+    search_res = client.get(
+        f"/api/search?from_station=Delhi&to_station=Kanpur&travel_date={tomorrow}"
+    )
+    journeys = search_res.json()["journeys"]
+    j = next((x for x in journeys if x["legs"][0].get("seats")), journeys[0])
+    first_leg = j["legs"][0]
+    chosen_cls = next(iter(first_leg["seats"])) if first_leg.get("seats") else "3A"
+
+    legs = [
+        {
+            "train": first_leg["train"],
+            "from_code": first_leg["from_code"],
+            "to_code": first_leg["to_code"],
+            "date": first_leg["date"],
+            "travel_class": chosen_cls,
+        }
+    ]
+
+    session_a = "user-sess-aaa"
+    session_b = "user-sess-bbb"
+
+    # User A books
+    book_res_a = client.post(
+        "/api/book",
+        json={
+            "legs": legs,
+            "passenger_name": "Traveler A",
+            "travel_class": chosen_cls,
+        },
+        headers={"X-Session-ID": session_a},
+    )
+    assert book_res_a.status_code == 200
+    pnr_a = book_res_a.json()["booking"]["pnr"]
+
+    # User A sees their booking
+    list_a = client.get("/api/bookings", headers={"X-Session-ID": session_a})
+    pnrs_a = [b["pnr"] for b in list_a.json()["bookings"]]
+    assert pnr_a in pnrs_a
+
+    # User B does NOT see User A's booking
+    list_b = client.get("/api/bookings", headers={"X-Session-ID": session_b})
+    pnrs_b = [b["pnr"] for b in list_b.json()["bookings"]]
+    assert pnr_a not in pnrs_b
+
+    # User B cannot cancel User A's booking
+    cancel_b = client.post("/api/cancel", json={"pnr": pnr_a}, headers={"X-Session-ID": session_b})
+    assert cancel_b.status_code == 200
+    assert cancel_b.json()["success"] is False
+
+    # User A cancels their booking
+    cancel_a = client.post("/api/cancel", json={"pnr": pnr_a}, headers={"X-Session-ID": session_a})
+    assert cancel_a.status_code == 200
+    assert cancel_a.json()["success"] is True
+
+    # User A no longer sees it
+    list_a2 = client.get("/api/bookings", headers={"X-Session-ID": session_a})
+    pnrs_a2 = [b["pnr"] for b in list_a2.json()["bookings"]]
+    assert pnr_a not in pnrs_a2
+
+
+def test_rate_limiting_chat(monkeypatch):
+    limiter = app.state.limiter
+    limiter.reset()
+
+    # Mock groq call to prevent actual network requests
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+
+    # Rate limit on /api/chat is 10/minute
+    got_429 = False
+    for _ in range(15):
+        res = client.post("/api/chat", json={"message": "ping", "history": []})
+        if res.status_code == 429:
+            got_429 = True
+            break
+    assert got_429, "Expected 429 Too Many Requests after exceeding 10 req/min on /api/chat"
+    limiter.reset()
+
+
+def test_rate_limiting_search():
+    limiter = app.state.limiter
+    limiter.reset()
+
+    # Rate limit on /api/search is 30/minute
+    got_429 = False
+    for _ in range(35):
+        res = client.get(f"/api/search?from_station=Delhi&to_station=Kanpur&travel_date={tomorrow}")
+        if res.status_code == 429:
+            got_429 = True
+            break
+    assert got_429, "Expected 429 Too Many Requests after exceeding 30 req/min on /api/search"
+    limiter.reset()

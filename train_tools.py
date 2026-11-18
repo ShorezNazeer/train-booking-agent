@@ -61,15 +61,30 @@ def _clock(minutes: int) -> str:
 
 
 # ---------- bookings storage ----------
-def _load_bookings() -> list:
+def _load_bookings(session_id: str = None) -> list:
     if not BOOKINGS_PATH.exists():
         return []
-    return json.loads(BOOKINGS_PATH.read_text())
+    try:
+        all_bookings = json.loads(BOOKINGS_PATH.read_text())
+    except (json.JSONDecodeError, OSError):
+        return []
+    if session_id is not None:
+        return [b for b in all_bookings if b.get("session_id") == session_id]
+    return all_bookings
 
 
-def _save_bookings(bookings: list) -> None:
+def _save_bookings(bookings: list, session_id: str = None) -> None:
     BOOKINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    BOOKINGS_PATH.write_text(json.dumps(bookings, indent=2))
+    if session_id is None:
+        BOOKINGS_PATH.write_text(json.dumps(bookings, indent=2))
+    else:
+        try:
+            existing = json.loads(BOOKINGS_PATH.read_text()) if BOOKINGS_PATH.exists() else []
+        except Exception:
+            existing = []
+        other = [b for b in existing if b.get("session_id") != session_id]
+        combined = other + bookings
+        BOOKINGS_PATH.write_text(json.dumps(combined, indent=2))
 
 
 # ---------- seats inside a train ----------
@@ -85,10 +100,10 @@ def _find_ride(tt: Timetable, train: str, from_codes, to_codes):
     return None
 
 
-def _booked_counts(tt: Timetable) -> Counter:
+def _booked_counts(tt: Timetable, session_id: str = None) -> Counter:
     """Confirmed bookings per (train, run date, class, segment)."""
     counts = Counter()
-    for b in _load_bookings():
+    for b in _load_bookings(session_id=session_id):
         if b["status"] != "confirmed":
             continue
         for leg in b["legs"]:
@@ -181,7 +196,8 @@ def search_trains(from_station: str, to_station: str, travel_date: str,
 
 
 def check_seats(train_number: str, travel_date: str, from_station: str = None,
-                to_station: str = None, travel_class: str = None) -> dict:
+                to_station: str = None, travel_class: str = None,
+                session_id: str = None) -> dict:
     """Look inside one train: which classes have seats from one stop to another,
     where each class has seats along the way, and how to cover the trip by
     changing class if no single class does. Without from/to it covers the whole
@@ -209,7 +225,7 @@ def check_seats(train_number: str, travel_date: str, from_station: str = None,
 
     board, alight = ride
     run_day = seg.run_date(d, board.dep)
-    fn = _seats_fn(train, run_day, _booked_counts(tt))
+    fn = _seats_fn(train, run_day, _booked_counts(tt, session_id=session_id))
     classes = [travel_class] if travel_class else list(CLASSES)
     whole, plan = seg.class_plan(board.seq, alight.seq, fn, classes)
 
@@ -248,7 +264,7 @@ def check_seats(train_number: str, travel_date: str, from_station: str = None,
 
 
 def book_ticket(legs: list, travel_class: str = None, passenger_name: str = "",
-                confirm=None) -> dict:
+                confirm=None, session_id: str = None) -> dict:
     """Book one or more connected legs. Each leg is a dict with train, from_code,
     to_code and date (the date you board that train), and optionally its own
     travel_class; travel_class is the default for legs that don't set one. To ride
@@ -259,7 +275,7 @@ def book_ticket(legs: list, travel_class: str = None, passenger_name: str = "",
         return _fail("I need the passenger's name.")
 
     tt = _timetable()
-    booked = _booked_counts(tt)
+    booked = _booked_counts(tt, session_id=session_id)
     checked = []
     for i, leg in enumerate(legs, start=1):
         if not isinstance(leg, dict) or not all(
@@ -310,15 +326,16 @@ def book_ticket(legs: list, travel_class: str = None, passenger_name: str = "",
         "legs": checked,
         "status": "confirmed",
         "booked_at": datetime.now().isoformat(timespec="seconds"),
+        "session_id": session_id,
     }
-    bookings = _load_bookings()
+    bookings = _load_bookings(session_id=session_id)
     bookings.append(booking)
-    _save_bookings(bookings)
+    _save_bookings(bookings, session_id=session_id)
     return _ok(f"Booked. Your PNR is {pnr}. (Simulated booking.)", booking=booking)
 
 
-def cancel_ticket(pnr: str, confirm=None) -> dict:
-    bookings = _load_bookings()
+def cancel_ticket(pnr: str, confirm=None, session_id: str = None) -> dict:
+    bookings = _load_bookings(session_id=session_id)
     target = next((b for b in bookings
                    if b["pnr"] == str(pnr).upper() and b["status"] == "confirmed"), None)
     if target is None:
@@ -327,10 +344,10 @@ def cancel_ticket(pnr: str, confirm=None) -> dict:
     if not ask(f"Cancel booking {target['pnr']} for {target['passenger']}?"):
         return _fail("Cancellation was not confirmed, so the booking stays.")
     target["status"] = "cancelled"
-    _save_bookings(bookings)
+    _save_bookings(bookings, session_id=session_id)
     return _ok(f"Booking {target['pnr']} cancelled.", booking=target)
 
 
-def list_bookings() -> dict:
-    active = [b for b in _load_bookings() if b["status"] == "confirmed"]
+def list_bookings(session_id: str = None) -> dict:
+    active = [b for b in _load_bookings(session_id=session_id) if b["status"] == "confirmed"]
     return _ok(f"{len(active)} active booking(s).", bookings=active)

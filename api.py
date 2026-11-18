@@ -13,6 +13,9 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from groq import Groq
 from pydantic import BaseModel, Field
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 import availability as av
@@ -25,11 +28,15 @@ from data_source import CITY_ALIASES
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 
+limiter = Limiter(key_func=get_remote_address)
+
 app = FastAPI(
     title="Train Booking Engine API",
     description="Modern Train Booking Engine with AI Assistant, Segmented Class Changes, and Multi-Train Routing",
     version="1.0.0",
 )
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Enable CORS for local testing and decoupled frontends
 app.add_middleware(
@@ -44,6 +51,8 @@ app.add_middleware(
 # Global exception handler returning {"detail": str(exc)} for unhandled server errors
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
+    if isinstance(exc, RateLimitExceeded):
+        return _rate_limit_exceeded_handler(request, exc)
     if isinstance(exc, (HTTPException, StarletteHTTPException)):
         return JSONResponse(
             status_code=exc.status_code,
@@ -172,7 +181,9 @@ def get_stations(q: Optional[str] = Query(None, description="Search query")):
 
 # ---------- Search Endpoint ----------
 @app.get("/api/search")
+@limiter.limit("30/minute")
 def search_trains_get(
+    request: Request,
     from_station: str = Query(..., description="Origin city/station"),
     to_station: str = Query(..., description="Destination city/station"),
     travel_date: str = Query(..., description="YYYY-MM-DD"),
@@ -192,7 +203,8 @@ def search_trains_get(
 
 
 @app.post("/api/search")
-def search_trains_post(req: SearchRequest):
+@limiter.limit("30/minute")
+def search_trains_post(request: Request, req: SearchRequest):
     return tools.search_trains(
         from_station=req.from_station,
         to_station=req.to_station,
@@ -206,35 +218,41 @@ def search_trains_post(req: SearchRequest):
 # ---------- Check Seats Endpoint ----------
 @app.get("/api/check-seats")
 def check_seats_get(
+    request: Request,
     train_number: str = Query(..., description="Train number"),
     travel_date: str = Query(..., description="YYYY-MM-DD"),
     from_station: Optional[str] = Query(None),
     to_station: Optional[str] = Query(None),
     travel_class: Optional[str] = Query(None),
 ):
+    session_id = request.headers.get("x-session-id")
     return tools.check_seats(
         train_number=train_number,
         travel_date=travel_date,
         from_station=from_station,
         to_station=to_station,
         travel_class=travel_class,
+        session_id=session_id,
     )
 
 
 @app.post("/api/check-seats")
-def check_seats_post(req: CheckSeatsRequest):
+def check_seats_post(request: Request, req: CheckSeatsRequest):
+    session_id = request.headers.get("x-session-id")
     return tools.check_seats(
         train_number=req.train_number,
         travel_date=req.travel_date,
         from_station=req.from_station,
         to_station=req.to_station,
         travel_class=req.travel_class,
+        session_id=session_id,
     )
 
 
 # ---------- Book Ticket Endpoint ----------
 @app.post("/api/book")
-def book_ticket(req: BookRequest):
+def book_ticket(req: BookRequest, request: Request):
+    session_id = request.headers.get("x-session-id")
     # Pass confirm=lambda _: True since confirmation happens in a UI modal
     legs = [l.model_dump(exclude_none=True) for l in req.legs]
     res = tools.book_ticket(
@@ -242,25 +260,29 @@ def book_ticket(req: BookRequest):
         travel_class=req.travel_class,
         passenger_name=req.passenger_name,
         confirm=lambda _: True,
+        session_id=session_id,
     )
     return res
 
 
 # ---------- Bookings Endpoint ----------
 @app.get("/api/bookings")
-def get_bookings():
-    return tools.list_bookings()
+def get_bookings(request: Request):
+    session_id = request.headers.get("x-session-id")
+    return tools.list_bookings(session_id=session_id)
 
 
 # ---------- Cancel Booking Endpoint ----------
 @app.post("/api/cancel")
-def cancel_ticket_post(req: CancelRequest):
-    return tools.cancel_ticket(pnr=req.pnr, confirm=lambda _: True)
+def cancel_ticket_post(req: CancelRequest, request: Request):
+    session_id = request.headers.get("x-session-id")
+    return tools.cancel_ticket(pnr=req.pnr, confirm=lambda _: True, session_id=session_id)
 
 
 @app.delete("/api/bookings/{pnr}")
-def cancel_ticket_delete(pnr: str):
-    return tools.cancel_ticket(pnr=pnr, confirm=lambda _: True)
+def cancel_ticket_delete(pnr: str, request: Request):
+    session_id = request.headers.get("x-session-id")
+    return tools.cancel_ticket(pnr=pnr, confirm=lambda _: True, session_id=session_id)
 
 
 # ---------- One-Click Demo Endpoints ----------
@@ -323,18 +345,19 @@ def demo_reset():
 
 
 # ---------- Chat Assistant Endpoint ----------
-WEB_TOOL_IMPL = {
-    "search_trains": tools.search_trains,
-    "check_seats": tools.check_seats,
-    "book_ticket": lambda **kwargs: tools.book_ticket(**kwargs, confirm=lambda _: True),
-    "cancel_ticket": lambda **kwargs: tools.cancel_ticket(**kwargs, confirm=lambda _: True),
-    "list_bookings": tools.list_bookings,
-}
-
-
 @app.post("/api/chat")
-def chat_endpoint(req: ChatRequest):
+@limiter.limit("10/minute")
+def chat_endpoint(request: Request, req: ChatRequest):
     groq_api_key = os.environ.get("GROQ_API_KEY")
+    session_id = request.headers.get("x-session-id")
+
+    session_tools = {
+        "search_trains": tools.search_trains,
+        "check_seats": lambda **kwargs: tools.check_seats(**kwargs, session_id=session_id),
+        "book_ticket": lambda **kwargs: tools.book_ticket(**kwargs, confirm=lambda _: True, session_id=session_id),
+        "cancel_ticket": lambda **kwargs: tools.cancel_ticket(**kwargs, confirm=lambda _: True, session_id=session_id),
+        "list_bookings": lambda **kwargs: tools.list_bookings(session_id=session_id),
+    }
     if not groq_api_key:
         return JSONResponse(
             status_code=500,
@@ -404,7 +427,7 @@ def chat_endpoint(req: ChatRequest):
             for call in msg.tool_calls:
                 name = call.function.name
                 args = json.loads(call.function.arguments or "{}")
-                impl = WEB_TOOL_IMPL.get(name)
+                impl = session_tools.get(name)
                 if impl is None:
                     res_obj = {"success": False, "reason": f"unknown tool '{name}'"}
                 else:

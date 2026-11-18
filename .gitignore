@@ -3,3 +3,5 @@ __pycache__/
 data/raw/
 .env
 data/bookings.json
+raw_data/
+data/trains_backup.db

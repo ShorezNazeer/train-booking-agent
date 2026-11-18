@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import NamedTuple, Optional
 
+import live_seats
 import segments as seg
 from data_source import Timetable
 
@@ -78,8 +79,17 @@ def find_direct(tt: Timetable, from_codes, to_codes,
         if depart < earliest:
             continue
         run_day = seg.run_date(travel_date, r["depart"])
-        got = _leg_seats(tt, r["train"], run_day, r["from_seq"], r["to_seq"],
-                         depart, r["depart"])
+        got = live_seats.materialize_leg_seats(
+            tt,
+            train=r["train"],
+            from_station=r["from"],
+            to_station=r["to"],
+            run_day=run_day,
+            board_seq=r["from_seq"],
+            alight_seq=r["to_seq"],
+            leg_depart=depart,
+            board_dep=r["depart"],
+        )
         if got is None:
             continue
         seats, split = got
@@ -145,8 +155,17 @@ class _Label:
 
 
 def _materialize(tt: Timetable, raw: _RawLeg) -> Leg:
-    got = _leg_seats(tt, raw.train, raw.run_day, raw.board_seq, raw.alight_seq,
-                     raw.depart, raw.board_dep)
+    got = live_seats.materialize_leg_seats(
+        tt,
+        train=raw.train,
+        from_station=raw.from_station,
+        to_station=raw.to_station,
+        run_day=raw.run_day,
+        board_seq=raw.board_seq,
+        alight_seq=raw.alight_seq,
+        leg_depart=raw.depart,
+        board_dep=raw.board_dep,
+    )
     assert got is not None, f"no seats on a leg the search accepted: {raw}"
     seats, split = got
     return Leg(train=raw.train, name=tt.train_name(raw.train),

@@ -2,6 +2,42 @@
  * Train Booking Engine Frontend Application
  */
 
+// Session Management: Isolate bookings per user session via X-Session-ID stored in localStorage
+const SESSION_STORAGE_KEY = "railengine_session_id";
+
+function getSessionId() {
+  let sessionId = localStorage.getItem(SESSION_STORAGE_KEY);
+  if (!sessionId) {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      sessionId = crypto.randomUUID();
+    } else {
+      sessionId = "sess_" + Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
+    }
+    localStorage.setItem(SESSION_STORAGE_KEY, sessionId);
+  }
+  return sessionId;
+}
+
+// Intercept window.fetch to attach X-Session-ID header to all API requests
+const _nativeFetch = window.fetch;
+window.fetch = function (resource, init) {
+  const options = init ? { ...init } : {};
+  const sessionId = getSessionId();
+
+  if (options.headers instanceof Headers) {
+    options.headers.set("X-Session-ID", sessionId);
+  } else if (Array.isArray(options.headers)) {
+    options.headers = [...options.headers, ["X-Session-ID", sessionId]];
+  } else {
+    options.headers = {
+      ...(options.headers || {}),
+      "X-Session-ID": sessionId,
+    };
+  }
+
+  return _nativeFetch.call(this, resource, options);
+};
+
 const state = {
   fromStation: "Lucknow",
   toStation: "Delhi",
