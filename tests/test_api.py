@@ -336,3 +336,84 @@ def test_ndls_cnb_current_trains_and_chronological_stops():
     found_trains = {j["legs"][0]["train"] for j in data["journeys"]}
     assert "22436" in found_trains or "12004" in found_trains
 
+
+def test_search_with_preferred_classes_and_fares():
+    # 1. Search with preferred_classes=3A
+    res = client.get(
+        f"/api/search?from_station=NDLS&to_station=CNB&travel_date={tomorrow}&preferred_classes=3A"
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["success"] is True
+    assert len(data.get("journeys", [])) > 0
+
+    for j in data["journeys"]:
+        # Verify total_fare_inr and fare_breakdown exist and are populated
+        assert j.get("total_fare_inr", 0) > 0
+        assert "fare_breakdown" in j
+        for leg in j["legs"]:
+            # If leg has single-class seats, it must have 3A
+            if leg["seats"]:
+                assert "3A" in leg["seats"]
+            # If leg is split, all stretches must be 3A
+            if leg["needs_class_change"]:
+                for slice_item in leg["class_plan"]:
+                    assert slice_item["travel_class"] == "3A"
+                    assert slice_item.get("fare_inr", 0) > 0
+
+    # 2. Search with preferred_classes=SL
+    res_sl = client.get(
+        f"/api/search?from_station=NDLS&to_station=CNB&travel_date={tomorrow}&preferred_classes=SL"
+    )
+    assert res_sl.status_code == 200
+    data_sl = res_sl.json()
+    if data_sl["success"] and data_sl.get("journeys"):
+        for j in data_sl["journeys"]:
+            for leg in j["legs"]:
+                if leg["seats"]:
+                    assert "SL" in leg["seats"]
+                if leg["needs_class_change"]:
+                    for slice_item in leg["class_plan"]:
+                        assert slice_item["travel_class"] == "SL"
+
+
+def test_book_ticket_carries_fares_and_breakdowns():
+    # 1. Dynamically search for a train with 3A seats between NDLS and CNB
+    search_res = client.get(
+        f"/api/search?from_station=NDLS&to_station=CNB&travel_date={tomorrow}&preferred_classes=3A"
+    )
+    assert search_res.status_code == 200
+    search_data = search_res.json()
+    assert search_data["success"] is True and len(search_data["journeys"]) > 0
+    candidate = search_data["journeys"][0]
+    train_num = candidate["legs"][0]["train"]
+
+    # 2. Book a ticket on the candidate train
+    book_res = client.post(
+        "/api/book",
+        json={
+            "legs": [
+                {
+                    "train": train_num,
+                    "from_code": "NDLS",
+                    "to_code": "CNB",
+                    "date": tomorrow,
+                    "travel_class": "3A",
+                }
+            ],
+            "passenger_name": "Rohan Gupta",
+            "travel_class": "3A",
+        },
+    )
+    assert book_res.status_code == 200
+    data = book_res.json()
+    assert data["success"] is True
+    booking = data["booking"]
+    assert booking["passenger"] == "Rohan Gupta"
+    assert booking.get("total_fare_inr", 0) > 0
+    assert len(booking["legs"]) == 1
+    assert booking["legs"][0]["fare_inr"] > 0
+    assert "fare_breakdown" in booking["legs"][0]
+    assert booking["legs"][0]["fare_breakdown"]["travel_class"] == "3A"
+
+

@@ -1,8 +1,9 @@
 """Route finding: direct search, multi-leg search, and per-segment class plans."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
-from typing import NamedTuple, Optional
+from typing import NamedTuple, Optional, Tuple
 
+import fare_engine
 import live_seats
 import segments as seg
 from data_source import Timetable
@@ -17,6 +18,8 @@ class Piece:
     seats: int
     depart: int   # minutes since midnight of the travel date
     arrive: int
+    fare_inr: int = 0
+    fare_breakdown: Optional[dict] = None
 
 
 @dataclass(frozen=True)
@@ -29,6 +32,8 @@ class Leg:
     arrive: int   # may exceed 1440 for overnight journeys
     seats: dict   # {class: seats left} for classes that cover the whole leg
     split: tuple = ()  # Pieces to book instead when no single class covers the leg
+    fare_inr: int = 0
+    class_fares: dict = field(default_factory=dict)
 
     @property
     def duration(self) -> int:
@@ -43,37 +48,49 @@ def fmt_time(minutes: int) -> str:
 
 
 def _leg_seats(tt: Timetable, train: str, run_day: date, board_seq: int,
-               alight_seq: int, leg_depart: int, board_dep: int):
+               alight_seq: int, leg_depart: int, board_dep: int,
+               preferred_classes: Optional[Tuple[str, ...]] = None):
     """Seats for riding `train` from stop board_seq to alight_seq.
     Returns (seats, split), where split is a tuple of Pieces used when no single
     class covers the whole ride, or None if some stretch has no seat at all."""
     def seats_fn(cls, s):
         return seg.segment_seats(train, run_day, cls, s)
 
-    whole, plan = seg.class_plan(board_seq, alight_seq, seats_fn)
+    classes = tuple(preferred_classes) if preferred_classes else None
+    whole, plan = seg.class_plan(board_seq, alight_seq, seats_fn, classes=classes)
     if whole:
-        return whole, ()
+        if classes:
+            whole = {c: n for c, n in whole.items() if c in classes}
+        if whole:
+            return whole, ()
     if plan is None:
         return None
     stops = tt.stops_of(train)
     pieces = []
     for a, b, cls, n in plan:
+        if classes and cls not in classes:
+            return None
         sa, sb = stops[a], stops[b]
         dep_a = sa.dep if sa.dep is not None else sa.arr
         arr_b = sb.arr if sb.arr is not None else sb.dep
+        p_fare = fare_engine.calculate_stretch_fare(sa.station, sb.station, cls)
         pieces.append(Piece(sa.station, sb.station, cls, n,
                             leg_depart + dep_a - board_dep,
-                            leg_depart + arr_b - board_dep))
+                            leg_depart + arr_b - board_dep,
+                            fare_inr=p_fare["total_fare"],
+                            fare_breakdown=p_fare))
     return {}, tuple(pieces)
 
 
 def find_direct(tt: Timetable, from_codes, to_codes,
-                travel_date: date, earliest: int = 0) -> list:
+                travel_date: date, earliest: int = 0,
+                preferred_classes: Optional[Tuple[str, ...]] = None) -> list:
     """Direct trains you can ride on travel_date, leaving at or after `earliest`
     (minutes since midnight). A train counts if one class has seats for the whole
     ride, or if the ride can be covered by changing class along the way.
     Trains are assumed to run daily."""
     legs = []
+    classes = tuple(preferred_classes) if preferred_classes else None
     for r in tt.direct_trains(from_codes, to_codes):
         depart = r["depart"] % 1440          # time of day you board
         if depart < earliest:
@@ -89,15 +106,64 @@ def find_direct(tt: Timetable, from_codes, to_codes,
             alight_seq=r["to_seq"],
             leg_depart=depart,
             board_dep=r["depart"],
+            preferred_classes=classes,
         )
         if got is None:
             continue
         seats, split = got
+        if classes:
+            if seats:
+                seats = {c: n for c, n in seats.items() if c in classes}
+            if split:
+                split = tuple(p for p in split if p.travel_class in classes)
+            if not seats and not split:
+                continue
+
+        # Attach fare calculations to pieces in split
+        split_with_fares = []
+        for p in split:
+            p_fare = fare_engine.calculate_stretch_fare(p.from_station, p.to_station, p.travel_class)
+            split_with_fares.append(Piece(
+                from_station=p.from_station,
+                to_station=p.to_station,
+                travel_class=p.travel_class,
+                seats=p.seats,
+                depart=p.depart,
+                arrive=p.arrive,
+                fare_inr=p_fare["total_fare"],
+                fare_breakdown=p_fare,
+            ))
+        split_tuple = tuple(split_with_fares)
+
+        class_fares = {
+            cls: fare_engine.calculate_stretch_fare(r["from"], r["to"], cls)["total_fare"]
+            for cls in seats
+        }
+        leg_fare = 0
+        if split_tuple:
+            leg_fare = sum(p.fare_inr for p in split_tuple)
+        elif class_fares:
+            chosen_cls = None
+            if classes:
+                for pc in classes:
+                    if pc in class_fares:
+                        chosen_cls = pc
+                        break
+            if not chosen_cls:
+                for cand in ["3A", "SL", "2A", "CC", "3E", "1A", "EC", "2S"]:
+                    if cand in class_fares:
+                        chosen_cls = cand
+                        break
+            if not chosen_cls:
+                chosen_cls = next(iter(class_fares.keys()))
+            leg_fare = class_fares.get(chosen_cls, 0)
+
         legs.append(Leg(
             train=r["train"], name=r["name"],
             from_station=r["from"], to_station=r["to"],
             depart=depart, arrive=depart + r["duration_min"],
-            seats=seats, split=split,
+            seats=seats, split=split_tuple,
+            fare_inr=leg_fare, class_fares=class_fares,
         ))
     return sorted(legs, key=lambda leg: leg.depart)
 
@@ -112,6 +178,8 @@ INF = float("inf")
 @dataclass(frozen=True)
 class Journey:
     legs: tuple
+    total_fare_inr: int = 0
+    fare_breakdown: tuple = ()
 
     @property
     def depart(self) -> int:
@@ -154,7 +222,8 @@ class _Label:
     parent: Optional["_Label"]
 
 
-def _materialize(tt: Timetable, raw: _RawLeg) -> Leg:
+def _materialize(tt: Timetable, raw: _RawLeg, preferred_classes: Optional[Tuple[str, ...]] = None) -> Leg:
+    classes = tuple(preferred_classes) if preferred_classes else None
     got = live_seats.materialize_leg_seats(
         tt,
         train=raw.train,
@@ -165,18 +234,65 @@ def _materialize(tt: Timetable, raw: _RawLeg) -> Leg:
         alight_seq=raw.alight_seq,
         leg_depart=raw.depart,
         board_dep=raw.board_dep,
+        preferred_classes=classes,
     )
     assert got is not None, f"no seats on a leg the search accepted: {raw}"
     seats, split = got
+    if classes:
+        if seats:
+            seats = {c: n for c, n in seats.items() if c in classes}
+        if split:
+            split = tuple(p for p in split if p.travel_class in classes)
+
+    split_with_fares = []
+    for p in split:
+        p_fare = fare_engine.calculate_stretch_fare(p.from_station, p.to_station, p.travel_class)
+        split_with_fares.append(Piece(
+            from_station=p.from_station,
+            to_station=p.to_station,
+            travel_class=p.travel_class,
+            seats=p.seats,
+            depart=p.depart,
+            arrive=p.arrive,
+            fare_inr=p_fare["total_fare"],
+            fare_breakdown=p_fare,
+        ))
+    split_tuple = tuple(split_with_fares)
+
+    class_fares = {
+        cls: fare_engine.calculate_stretch_fare(raw.from_station, raw.to_station, cls)["total_fare"]
+        for cls in seats
+    }
+    leg_fare = 0
+    if split_tuple:
+        leg_fare = sum(p.fare_inr for p in split_tuple)
+    elif class_fares:
+        chosen_cls = None
+        if classes:
+            for pc in classes:
+                if pc in class_fares:
+                    chosen_cls = pc
+                    break
+        if not chosen_cls:
+            for cand in ["3A", "SL", "2A", "CC", "3E", "1A", "EC", "2S"]:
+                if cand in class_fares:
+                    chosen_cls = cand
+                    break
+        if not chosen_cls:
+            chosen_cls = next(iter(class_fares.keys()))
+        leg_fare = class_fares.get(chosen_cls, 0)
+
     return Leg(train=raw.train, name=tt.train_name(raw.train),
                from_station=raw.from_station, to_station=raw.to_station,
-               depart=raw.depart, arrive=raw.arrive, seats=seats, split=split)
+               depart=raw.depart, arrive=raw.arrive, seats=seats, split=split_tuple,
+               fare_inr=leg_fare, class_fares=class_fares)
 
 
 def find_routes(tt: Timetable, from_codes, to_codes, travel_date: date,
                 earliest: int = 0, max_trains: int = 3,
                 min_layover: int = MIN_LAYOVER, max_layover: int = MAX_LAYOVER,
-                horizon: int = HORIZON) -> list:
+                horizon: int = HORIZON,
+                preferred_classes: Optional[Tuple[str, ...]] = None) -> list:
     """Best journey for each number of trains (1..max_trains), earliest
     arrival first among equals. All times are minutes since midnight of
     travel_date. The first train must leave on travel_date. A leg may need a
@@ -184,6 +300,7 @@ def find_routes(tt: Timetable, from_codes, to_codes, travel_date: date,
     to_set = set(to_codes)
     limit = earliest + horizon
     forced = seg.forced_trains()
+    classes = tuple(preferred_classes) if preferred_classes else None
 
     frontier = {c: _Label(earliest, None, None) for c in from_codes}
     best = {c: earliest for c in from_codes}   # earliest arrival seen per station
@@ -223,7 +340,7 @@ def find_routes(tt: Timetable, from_codes, to_codes, travel_date: date,
                                 travel_date + timedelta(days=depart // 1440), board.dep)
                             dead = seg.first_dead_segment(
                                 board.train, run_day, board.seq, len(stops) - 1,
-                                board.train in forced)
+                                board.train in forced, classes=classes)
                         if alight.seq - 1 >= dead:
                             break
                         best[alight.station] = arrive
@@ -236,9 +353,11 @@ def find_routes(tt: Timetable, from_codes, to_codes, travel_date: date,
             lab = min(reached, key=lambda x: x.arrive)
             legs = []
             while lab.leg is not None:
-                legs.append(_materialize(tt, lab.leg))
+                legs.append(_materialize(tt, lab.leg, preferred_classes=classes))
                 lab = lab.parent
-            journeys.append(Journey(tuple(reversed(legs))))
+            legs_tuple = tuple(reversed(legs))
+            tot_fare, bdown = fare_engine.calculate_journey_fare(legs_tuple, preferred_classes=classes)
+            journeys.append(Journey(legs_tuple, total_fare_inr=tot_fare, fare_breakdown=bdown))
         for c in to_set:
             new.pop(c, None)        # no need to continue past the destination
         if not new:
@@ -248,7 +367,7 @@ def find_routes(tt: Timetable, from_codes, to_codes, travel_date: date,
 
 
 def plan_trip(tt: Timetable, from_text: str, to_text: str, travel_date: date,
-              earliest: int = 0, **kwargs) -> list:
+              earliest: int = 0, preferred_classes: Optional[Tuple[str, ...]] = None, **kwargs) -> list:
     """Direct trains if any can be ridden; otherwise the best multi-leg routes."""
     src = tt.resolve_station(from_text)
     dst = tt.resolve_station(to_text)
@@ -256,7 +375,13 @@ def plan_trip(tt: Timetable, from_text: str, to_text: str, travel_date: date,
         raise ValueError(f"I don't know a station called '{from_text}'.")
     if not dst:
         raise ValueError(f"I don't know a station called '{to_text}'.")
-    direct = find_direct(tt, src, dst, travel_date, earliest)
+    classes = tuple(preferred_classes) if preferred_classes else None
+    direct = find_direct(tt, src, dst, travel_date, earliest, preferred_classes=classes)
     if direct:
-        return [Journey((leg,)) for leg in direct]
-    return find_routes(tt, src, dst, travel_date, earliest, **kwargs)
+        journeys = []
+        for leg in direct:
+            tot_fare, bdown = fare_engine.calculate_journey_fare((leg,), preferred_classes=classes)
+            journeys.append(Journey((leg,), total_fare_inr=tot_fare, fare_breakdown=bdown))
+        return journeys
+    return find_routes(tt, src, dst, travel_date, earliest, preferred_classes=classes, **kwargs)
+

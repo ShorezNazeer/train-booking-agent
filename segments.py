@@ -41,9 +41,10 @@ def segment_seats(train, run_day, cls, s):
     return _block_seats(train, run_day, cls, s // BLOCK, av.SOLD_OUT_CHANCE)
 
 
-def any_class(train, run_day, s):
+def any_class(train, run_day, s, classes=None):
     """True if at least one class has a seat on segment s."""
-    return any(segment_seats(train, run_day, c, s) > 0 for c in av.CLASSES)
+    classes = classes or av.CLASSES
+    return any(segment_seats(train, run_day, c, s) > 0 for c in classes)
 
 
 def forced_trains():
@@ -51,22 +52,23 @@ def forced_trains():
     return frozenset(t for t, _, _ in FORCED_SEGMENT_SOLD_OUT)
 
 
-def first_dead_segment(train, run_day, from_seq, n_segments, per_segment=False):
+def first_dead_segment(train, run_day, from_seq, n_segments, per_segment=False, classes=None):
     """Index of the first segment at or after from_seq that no class can carry
     (n_segments if there is none). Availability is constant inside a block, so
     this checks once per block unless the train has per-segment overrides."""
     if (train, None) in av.FORCED_SOLD_OUT or (train, run_day.isoformat()) in av.FORCED_SOLD_OUT:
         return from_seq
+    classes = classes or av.CLASSES
     s = from_seq
     while s < n_segments:
         if per_segment:
-            if not any_class(train, run_day, s):
+            if not any_class(train, run_day, s, classes=classes):
                 return s
             s += 1
         else:
             block = s // BLOCK
             if not any(_block_seats(train, run_day, c, block, av.SOLD_OUT_CHANCE) > 0
-                       for c in av.CLASSES):
+                       for c in classes):
                 return s
             s = (block + 1) * BLOCK
     return n_segments

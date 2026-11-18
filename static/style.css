@@ -579,6 +579,39 @@ body {
   font-weight: 600;
 }
 
+/* Class Filter Chips */
+.class-filter-row {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.class-filter-chip {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  padding: 0.25rem 0.65rem;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.class-filter-chip:hover {
+  color: var(--text-primary);
+  border-color: var(--accent-blue);
+}
+
+.class-filter-chip.active {
+  background: rgba(139, 92, 246, 0.22);
+  color: #c4b5fd;
+  border-color: #a78bfa;
+  font-weight: 600;
+  box-shadow: 0 0 8px rgba(139, 92, 246, 0.25);
+}
+
 /* Toast Banner */
 .alert-banner {
   display: flex;
@@ -722,6 +755,14 @@ body {
   background: rgba(139, 92, 246, 0.2);
   color: var(--accent-purple);
   border: 1px solid rgba(139, 92, 246, 0.35);
+}
+
+.pill-price {
+  background: rgba(245, 158, 11, 0.16);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  font-weight: 800;
+  font-family: var(--font-mono);
 }
 
 /* Time & Route Row */
@@ -1019,6 +1060,43 @@ body {
 
 .chip-seat-avail.low {
   color: var(--accent-amber);
+}
+
+.chip-fare {
+  font-weight: 700;
+  color: #fbbf24;
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+}
+
+.slice-fare-tag {
+  font-weight: 700;
+  color: #fbbf24;
+  font-family: var(--font-mono);
+}
+
+.fare-breakdown-box {
+  background: rgba(17, 24, 39, 0.6);
+  border: 1px dashed rgba(245, 158, 11, 0.3);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 0.8rem;
+  margin-top: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.fare-stretch-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.8rem;
+  padding: 0.2rem 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.fare-stretch-item:last-child {
+  border-bottom: none;
 }
 
 /* Sidebar: AI Chat Assistant */

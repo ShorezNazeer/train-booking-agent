@@ -95,6 +95,7 @@ class SearchRequest(BaseModel):
     earliest: str = "00:00"
     sort: str = "fastest"
     limit: int = 5
+    preferred_classes: Optional[List[str]] = None
 
 
 class CheckSeatsRequest(BaseModel):
@@ -190,7 +191,9 @@ def search_trains_get(
     earliest: str = Query("00:00", description="Earliest time HH:MM"),
     sort: str = Query("fastest", description="fastest, earliest, or fewest_changes"),
     limit: int = Query(5, ge=1, le=20),
+    preferred_classes: Optional[str] = Query(None, description="Comma-separated class filter, e.g. '3A' or '2A,3A'"),
 ):
+    pref_list = [c.strip() for c in preferred_classes.split(",") if c.strip()] if preferred_classes else None
     res = tools.search_trains(
         from_station=from_station,
         to_station=to_station,
@@ -198,6 +201,7 @@ def search_trains_get(
         earliest=earliest,
         sort=sort,
         limit=limit,
+        preferred_classes=pref_list,
     )
     return res
 
@@ -212,6 +216,7 @@ def search_trains_post(request: Request, req: SearchRequest):
         earliest=req.earliest,
         sort=req.sort,
         limit=req.limit,
+        preferred_classes=req.preferred_classes,
     )
 
 

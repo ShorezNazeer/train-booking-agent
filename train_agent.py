@@ -49,6 +49,11 @@ TOOL_SCHEMAS = [
                         "enum": ["fastest", "earliest", "fewest_changes"],
                         "description": "How to rank the options. Default fastest.",
                     },
+                    "preferred_classes": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional list of allowed travel classes, e.g. ['3A'], ['2A', '3A'], or ['SL']. Limits multi-stretch same-train seat hops and direct routes to allowed classes.",
+                    },
                 },
                 "required": ["from_station", "to_station", "travel_date"],
             },
@@ -176,6 +181,9 @@ Rules:
    its own travel_class, from_code, to_code and date exactly as given in class_plan.
    To look inside one train, call check_seats with from_station and to_station: its
    `stretches` show where each class has seats, and `class_plan` how to cover the trip.
+12. Fares & Preferred Classes:
+   - When presenting candidate journeys, always include the total ticket fare in INR (e.g. Total Fare: ₹750) and per-segment fare breakdown if multi-stretch.
+   - If the user specifies an allowed class or preference (e.g., "only 3A", "AC only", "Sleeper only", "2A or 3A"), pass `preferred_classes` to `search_trains` (e.g. ['3A'], ['2A', '3A'], or ['SL']). This ensures any same-train seat-hopping stays locked to their requested classes.
 """
 
 

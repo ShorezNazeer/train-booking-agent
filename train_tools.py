@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import availability as av
+import fare_engine
 import segments as seg
 from data_source import Timetable
 from options import plan_options
@@ -142,6 +143,8 @@ def _describe_journey(tt: Timetable, journey, travel_date: date) -> dict:
             "date": (travel_date + timedelta(days=p.depart // 1440)).isoformat(),
             "departs": _clock(p.depart),
             "arrives": _clock(p.arrive),
+            "fare_inr": getattr(p, "fare_inr", 0),
+            "fare_breakdown": getattr(p, "fare_breakdown", None),
         } for p in leg.split]
         legs.append({
             "train": leg.train,
@@ -157,6 +160,8 @@ def _describe_journey(tt: Timetable, journey, travel_date: date) -> dict:
             "seats": leg.seats,                # classes that cover the whole leg
             "needs_class_change": bool(pieces),
             "class_plan": pieces,              # stretches, each in its own class
+            "fare_inr": getattr(leg, "fare_inr", 0),
+            "class_fares": getattr(leg, "class_fares", {}),
         })
     return {
         "transfers": journey.transfers,
@@ -165,6 +170,8 @@ def _describe_journey(tt: Timetable, journey, travel_date: date) -> dict:
         "arrives": _clock(journey.arrive),
         "arrives_date": (travel_date + timedelta(days=journey.arrive // 1440)).isoformat(),
         "layovers_min": journey.layovers(),
+        "total_fare_inr": getattr(journey, "total_fare_inr", 0),
+        "fare_breakdown": list(getattr(journey, "fare_breakdown", ())),
         "legs": legs,
     }
 
@@ -172,7 +179,7 @@ def _describe_journey(tt: Timetable, journey, travel_date: date) -> dict:
 # ---------- tools ----------
 def search_trains(from_station: str, to_station: str, travel_date: str,
                   earliest: str = "00:00", sort: str = "fastest",
-                  limit: int = 5) -> dict:
+                  limit: int = 5, preferred_classes: list = None) -> dict:
     """Direct trains you can ride, or ranked multi-leg alternatives if none."""
     d = _parse_date(travel_date)
     if d is None:
@@ -185,14 +192,16 @@ def search_trains(from_station: str, to_station: str, travel_date: str,
     tt = _timetable()
     try:
         options = plan_options(tt, from_station, to_station, d,
-                               earliest=e, sort=sort, limit=limit)
+                               earliest=e, sort=sort, limit=limit,
+                               preferred_classes=preferred_classes)
     except ValueError as err:
         return _fail(str(err))
     if not options:
         return _fail("No route with seats was found for that day.", journeys=[])
     journeys = [_describe_journey(tt, j, d) for j in options]
     kind = "direct train(s)" if options[0].transfers == 0 else "route(s) with changes"
-    return _ok(f"Found {len(journeys)} {kind}.", journeys=journeys)
+    fare_info = f", total fare from ₹{journeys[0]['total_fare_inr']}" if journeys[0].get("total_fare_inr") else ""
+    return _ok(f"Found {len(journeys)} {kind}{fare_info}.", journeys=journeys)
 
 
 def check_seats(train_number: str, travel_date: str, from_station: str = None,
@@ -250,9 +259,16 @@ def check_seats(train_number: str, travel_date: str, from_station: str = None,
             "date": (run_day + timedelta(days=board_time(a) // 1440)).isoformat(),
         } for a, b, c, n in plan]
 
+    fares = {
+        c: fare_engine.calculate_stretch_fare(board.station, alight.station, c)["total_fare"]
+        for c in classes
+    }
     where = f"{name(board.seq)} to {name(alight.seq)}"
-    extra = {"from_code": board.station, "to_code": alight.station,
-             "seats": whole, "stretches": stretches, "class_plan": class_plan}
+    extra = {
+        "from_code": board.station, "to_code": alight.station,
+        "seats": whole, "stretches": stretches, "class_plan": class_plan,
+        "fares": fares,
+    }
     if whole:
         return _ok(f"Train {train}, {where} on {d}: one class covers the whole trip.", **extra)
     if class_plan:
@@ -302,20 +318,23 @@ def book_ticket(legs: list, travel_class: str = None, passenger_name: str = "",
             return _fail(f"Leg {i}: no {cls} seats left on train {train} from "
                          f"{tt.station_name(board.station)} to "
                          f"{tt.station_name(alight.station)} on {day}.")
+        leg_fare = fare_engine.calculate_stretch_fare(leg["from_code"], leg["to_code"], cls)
         checked.append({"train": train, "from_code": leg["from_code"],
                         "to_code": leg["to_code"], "date": day.isoformat(),
-                        "travel_class": cls})
+                        "travel_class": cls, "fare_inr": leg_fare["total_fare"],
+                        "fare_breakdown": leg_fare})
     for a, b in zip(checked, checked[1:]):
         if a["to_code"] != b["from_code"]:
             return _fail("The legs don't connect: each leg must start where the "
                          "previous one ends.")
 
+    total_fare = sum(c.get("fare_inr", 0) for c in checked)
     summary = "; ".join(
         f"{tt.train_name(c['train'])} ({c['train']}) {tt.station_name(c['from_code'])}"
-        f" -> {tt.station_name(c['to_code'])} in {c['travel_class']} on {c['date']}"
+        f" -> {tt.station_name(c['to_code'])} in {c['travel_class']} on {c['date']} (₹{c['fare_inr']})"
         for c in checked)
     ask = confirm or _confirm
-    if not ask(f"Book for {passenger_name}: {summary}?"):
+    if not ask(f"Book for {passenger_name}: {summary} [Total: ₹{total_fare}]?"):
         return _fail("Booking was not confirmed, so nothing was booked.")
 
     pnr = uuid.uuid4().hex[:10].upper()
@@ -324,6 +343,7 @@ def book_ticket(legs: list, travel_class: str = None, passenger_name: str = "",
         "passenger": passenger_name.strip(),
         "travel_class": "+".join(dict.fromkeys(c["travel_class"] for c in checked)),
         "legs": checked,
+        "total_fare_inr": total_fare,
         "status": "confirmed",
         "booked_at": datetime.now().isoformat(timespec="seconds"),
         "session_id": session_id,
@@ -331,7 +351,7 @@ def book_ticket(legs: list, travel_class: str = None, passenger_name: str = "",
     bookings = _load_bookings(session_id=session_id)
     bookings.append(booking)
     _save_bookings(bookings, session_id=session_id)
-    return _ok(f"Booked. Your PNR is {pnr}. (Simulated booking.)", booking=booking)
+    return _ok(f"Booked. Your PNR is {pnr}. Total fare: ₹{total_fare}. (Simulated booking.)", booking=booking)
 
 
 def cancel_ticket(pnr: str, confirm=None, session_id: str = None) -> dict:

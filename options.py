@@ -43,7 +43,7 @@ def collect_options(tt, src, dst, travel_date, earliest=0, max_searches=4, **kw)
 
 
 def plan_options(tt, from_text, to_text, travel_date, earliest=0,
-                 sort="fastest", limit=5, **kw):
+                 sort="fastest", limit=5, preferred_classes=None, **kw):
     """Direct trains with seats if there are any, otherwise ranked multi-leg
     alternatives. sort is one of: fastest, earliest, fewest_changes."""
     src = tt.resolve_station(from_text)
@@ -55,7 +55,14 @@ def plan_options(tt, from_text, to_text, travel_date, earliest=0,
     if sort not in SORT_KEYS:
         raise ValueError(f"sort must be one of {sorted(SORT_KEYS)}")
 
-    direct = [Journey((leg,))
-              for leg in find_direct(tt, src, dst, travel_date, earliest)]
-    options = direct or collect_options(tt, src, dst, travel_date, earliest, **kw)
+    classes = tuple(preferred_classes) if preferred_classes else None
+    direct_legs = find_direct(tt, src, dst, travel_date, earliest, preferred_classes=classes)
+    direct = []
+    if direct_legs:
+        import fare_engine
+        for leg in direct_legs:
+            tot, bdown = fare_engine.calculate_journey_fare((leg,), preferred_classes=classes)
+            direct.append(Journey((leg,), total_fare_inr=tot, fare_breakdown=bdown))
+
+    options = direct or collect_options(tt, src, dst, travel_date, earliest, preferred_classes=classes, **kw)
     return sorted(options, key=SORT_KEYS[sort])[:limit]

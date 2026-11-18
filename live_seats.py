@@ -112,6 +112,7 @@ def fallback_segment_seats(
     alight_seq: int,
     leg_depart: int,
     board_dep: int,
+    preferred_classes: Optional[Tuple[str, ...]] = None,
 ) -> Optional[Tuple[Dict[str, int], Tuple]]:
     """Simulated seat availability via segments.py."""
     from routing import Piece
@@ -119,14 +120,20 @@ def fallback_segment_seats(
     def seats_fn(cls, s):
         return seg.segment_seats(train, run_day, cls, s)
 
-    whole, plan = seg.class_plan(board_seq, alight_seq, seats_fn)
+    classes = tuple(preferred_classes) if preferred_classes else None
+    whole, plan = seg.class_plan(board_seq, alight_seq, seats_fn, classes=classes)
     if whole:
-        return whole, ()
+        if classes:
+            whole = {c: n for c, n in whole.items() if c in classes}
+        if whole:
+            return whole, ()
     if plan is None:
         return None
     stops = tt.stops_of(train)
     pieces = []
     for a, b, cls, n in plan:
+        if classes and cls not in classes:
+            return None
         sa, sb = stops[a], stops[b]
         dep_a = sa.dep if sa.dep is not None else sa.arr
         arr_b = sb.arr if sb.arr is not None else sb.dep
@@ -146,6 +153,7 @@ def materialize_leg_seats(
     alight_seq: int,
     leg_depart: int,
     board_dep: int,
+    preferred_classes: Optional[Tuple[str, ...]] = None,
 ) -> Optional[Tuple[Dict[str, int], Tuple]]:
     """Determine seat availability for a candidate journey leg.
 
@@ -153,6 +161,7 @@ def materialize_leg_seats(
     When RAILWAY_API_KEY is unset or API call fails, falls back seamlessly to segments.py.
     """
     api_key, api_url = get_api_config()
+    classes = tuple(preferred_classes) if preferred_classes else None
 
     if api_key:
         live = fetch_live_seats(
@@ -165,12 +174,14 @@ def materialize_leg_seats(
         )
         if live is not None:
             # If live seats exist and has availability, return it
-            available_classes = {c: n for c, n in live.items() if n > 0}
+            available_classes = {
+                c: n for c, n in live.items()
+                if n > 0 and (not classes or c in classes)
+            }
             if available_classes:
                 return available_classes, ()
-            # If live seats explicitly returned 0 seats for all classes, check if any class has 0
             if live:
-                return {}, ()
+                return None
 
     # Seamless fallback to segments.py
     return fallback_segment_seats(
@@ -181,4 +192,5 @@ def materialize_leg_seats(
         alight_seq=alight_seq,
         leg_depart=leg_depart,
         board_dep=board_dep,
+        preferred_classes=classes,
     )

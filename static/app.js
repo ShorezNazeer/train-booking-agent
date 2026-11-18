@@ -44,6 +44,7 @@ const state = {
   travelDate: getTomorrowDate(),
   earliest: "00:00",
   sort: "fastest",
+  preferredClasses: "",
   journeys: [],
   activeBookings: [],
   selectedJourney: null,
@@ -163,6 +164,16 @@ function setupEventListeners() {
       const newDate = getOffsetDate(offset);
       document.getElementById("travelDateInput").value = newDate;
       state.travelDate = newDate;
+    });
+  });
+
+  // Class Filter Chips
+  document.querySelectorAll(".class-filter-chip").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      document.querySelectorAll(".class-filter-chip").forEach((c) => c.classList.remove("active"));
+      chip.classList.add("active");
+      state.preferredClasses = chip.getAttribute("data-classes") || "";
+      executeSearch();
     });
   });
 
@@ -365,6 +376,9 @@ async function executeSearch() {
       sort: state.sort,
       limit: "10",
     });
+    if (state.preferredClasses) {
+      params.append("preferred_classes", state.preferredClasses);
+    }
 
     const res = await fetch(`/api/search?${params.toString()}`);
     const data = await parseJsonResponse(res);
@@ -431,6 +445,7 @@ function renderJourneys(container, journeys) {
             </div>
           </div>
           <div class="journey-badges-group">
+            ${j.total_fare_inr ? `<span class="pill-badge pill-price">₹${j.total_fare_inr}</span>` : ""}
             ${isFastest ? '<span class="pill-badge pill-fastest">⚡ Fastest</span>' : ""}
             ${isDirect ? '<span class="pill-badge pill-direct">Direct</span>' : `<span class="pill-badge pill-transfers">${j.transfers} Transfer</span>`}
           </div>
@@ -511,6 +526,7 @@ function renderSegmentedBar(journey) {
               </div>
               <div class="slice-seats">
                 <span>${slice.seats} seats (${slice.departs} - ${slice.arrives})</span>
+                ${slice.fare_inr ? `<span class="slice-fare-tag"> • ₹${slice.fare_inr}</span>` : ""}
               </div>
             </div>
           `;
@@ -519,7 +535,7 @@ function renderSegmentedBar(journey) {
       </div>
 
       <div class="coach-change-notice">
-        <span>🔄 <strong>Coach Switch:</strong> Ride in <strong>${plan[0].travel_class}</strong> from ${plan[0].from_name}, then switch coach to <strong>${plan[1]?.travel_class || "next"}</strong> at <strong>${plan[0].to_name}</strong> (${plan[0].arrives}).</span>
+        <span>🔄 <strong>Coach Switch:</strong> Ride in <strong>${plan[0].travel_class}</strong>${plan[0].fare_inr ? ` (₹${plan[0].fare_inr})` : ""} from ${plan[0].from_name}, then switch coach to <strong>${plan[1]?.travel_class || "next"}</strong>${plan[1]?.fare_inr ? ` (₹${plan[1].fare_inr})` : ""} at <strong>${plan[0].to_name}</strong> (${plan[0].arrives}).</span>
       </div>
     </div>
   `;
@@ -571,11 +587,12 @@ function renderTransfersTimeline(journey) {
 function renderClassChips(journey, journeyIdx) {
   const leg = journey.legs[0];
   if (leg.needs_class_change) {
-    const planNames = leg.class_plan.map((p) => p.travel_class).join(" ➔ ");
+    const planNames = leg.class_plan.map((p) => `${p.travel_class}${p.fare_inr ? ` (₹${p.fare_inr})` : ""}`).join(" ➔ ");
     return `
       <div class="class-seat-chip active">
         <span class="chip-cls-name">Split Plan:</span>
         <span class="chip-seat-avail">${planNames}</span>
+        <span class="chip-fare">Total: ₹${journey.total_fare_inr || leg.fare_inr}</span>
       </div>
     `;
   }
@@ -587,12 +604,16 @@ function renderClassChips(journey, journeyIdx) {
 
   return entries
     .map(
-      ([cls, count]) => `
+      ([cls, count]) => {
+        const fare = leg.class_fares && leg.class_fares[cls] ? ` • ₹${leg.class_fares[cls]}` : "";
+        return `
     <div class="class-seat-chip" onclick="selectClassForBooking(${journeyIdx}, '${cls}')">
       <span class="chip-cls-name">${cls}</span>
       <span class="chip-seat-avail ${count < 5 ? "low" : ""}">${count} seats</span>
+      ${fare ? `<span class="chip-fare">${fare}</span>` : ""}
     </div>
-  `
+  `;
+      }
     )
     .join("");
 }
@@ -608,13 +629,53 @@ function initiateBooking(journeyIndex, preClass = null) {
   if (!journey) return;
 
   state.selectedJourney = journey;
-  state.selectedClass = preClass || Object.keys(journey.legs[0].seats)[0] || "3A";
+  const isSplit = journey.legs.some((l) => l.needs_class_change && l.class_plan);
+  const leg0 = journey.legs[0];
+  const availableClasses = Object.keys(leg0.seats || {});
+  const defaultClass = preClass || (availableClasses.length > 0 ? availableClasses[0] : "3A");
+  state.selectedClass = defaultClass;
 
   const modal = document.getElementById("bookingModal");
   const modalBody = document.getElementById("bookingModalBody");
   if (!modal || !modalBody) return;
 
-  const isSplit = journey.legs.some((l) => l.needs_class_change && l.class_plan);
+  function computeTotalFare(cls) {
+    if (isSplit) {
+      return journey.total_fare_inr || leg0.fare_inr || 0;
+    }
+    let total = 0;
+    journey.legs.forEach((l) => {
+      total += (l.class_fares && l.class_fares[cls]) || l.fare_inr || 0;
+    });
+    return total || journey.total_fare_inr || 0;
+  }
+
+  function renderBreakdownHtml(cls) {
+    if (isSplit) {
+      return leg0.class_plan
+        .map(
+          (p) => `
+        <div class="fare-stretch-item">
+          <span><strong>${p.travel_class}</strong>: ${p.from_code} ➔ ${p.to_code} ${p.fare_breakdown ? `(${p.fare_breakdown.distance_km} km)` : ""}</span>
+          <span style="color:#fbbf24; font-weight:700;">₹${p.fare_inr}</span>
+        </div>
+      `
+        )
+        .join("");
+    }
+    return journey.legs
+      .map(
+        (l) => `
+      <div class="fare-stretch-item">
+        <span><strong>${l.train}</strong>: ${l.from_code} ➔ ${l.to_code} (${cls})</span>
+        <span style="color:#fbbf24; font-weight:700;">₹${(l.class_fares && l.class_fares[cls]) || l.fare_inr || computeTotalFare(cls)}</span>
+      </div>
+    `
+      )
+      .join("");
+  }
+
+  const initialFare = computeTotalFare(state.selectedClass);
 
   modalBody.innerHTML = `
     <div class="booking-summary-box">
@@ -635,34 +696,58 @@ function initiateBooking(journeyIndex, preClass = null) {
           ? `
         <div class="summary-row">
           <span class="summary-label">Class Plan</span>
-          <span class="summary-val" style="color:var(--accent-amber)">${journey.legs[0].class_plan.map((p) => `${p.travel_class} (${p.from_code} - ${p.to_code})`).join(" + ")}</span>
+          <span class="summary-val" style="color:var(--accent-amber)">${leg0.class_plan.map((p) => `${p.travel_class} (${p.from_code} - ${p.to_code})`).join(" + ")}</span>
         </div>
       `
           : `
         <div class="summary-row">
           <span class="summary-label">Class</span>
           <select id="modalClassSelect" class="form-input no-icon" style="width: auto; padding: 0.2rem 0.5rem;">
-            ${["3A", "2A", "SL"]
+            ${(availableClasses.length > 0 ? availableClasses : ["3A", "2A", "SL"])
               .map(
                 (c) =>
-                  `<option value="${c}" ${state.selectedClass === c ? "selected" : ""}>${c} (${journey.legs[0].seats[c] ? journey.legs[0].seats[c] + " seats" : "Available"})</option>`
+                  `<option value="${c}" ${state.selectedClass === c ? "selected" : ""}>${c} (${leg0.seats?.[c] ? leg0.seats[c] + " seats" : "Available"}${leg0.class_fares?.[c] ? " • ₹" + leg0.class_fares[c] : ""})</option>`
               )
               .join("")}
           </select>
         </div>
       `
       }
+      <div class="summary-row">
+        <span class="summary-label">Total Ticket Fare</span>
+        <span class="summary-val" id="modalTotalFare" style="color:#fbbf24; font-weight:800; font-size:1.15rem;">₹${initialFare}</span>
+      </div>
+
+      <div class="fare-breakdown-box">
+        <span style="font-size:0.75rem; font-weight:700; color:var(--text-secondary); text-transform:uppercase;">Price Breakdown per Stretch</span>
+        <div id="modalBreakdownItems">
+          ${renderBreakdownHtml(state.selectedClass)}
+        </div>
+      </div>
     </div>
 
-    <div class="form-group">
+    <div class="form-group" style="margin-top: 1rem;">
       <label class="form-label" for="passengerNameInput">Passenger Full Name *</label>
       <input type="text" id="passengerNameInput" class="form-input no-icon" placeholder="e.g. Aditi Sharma" required />
     </div>
 
-    <div style="font-size: 0.75rem; color: var(--text-muted); background: var(--bg-tertiary); padding: 0.65rem 0.85rem; border-radius: var(--radius-sm); border: 1px solid var(--border-color);">
+    <div style="font-size: 0.75rem; color: var(--text-muted); background: var(--bg-tertiary); padding: 0.65rem 0.85rem; border-radius: var(--radius-sm); border: 1px solid var(--border-color); margin-top:0.75rem;">
       ℹ️ <strong>Simulated Booking:</strong> Instant reservation against local engine database. No actual payment required.
     </div>
   `;
+
+  const classSelect = document.getElementById("modalClassSelect");
+  if (classSelect) {
+    classSelect.addEventListener("change", (e) => {
+      const newCls = e.target.value;
+      state.selectedClass = newCls;
+      const newFare = computeTotalFare(newCls);
+      const fareEl = document.getElementById("modalTotalFare");
+      const breakdownEl = document.getElementById("modalBreakdownItems");
+      if (fareEl) fareEl.innerText = `₹${newFare}`;
+      if (breakdownEl) breakdownEl.innerHTML = renderBreakdownHtml(newCls);
+    });
+  }
 
   modal.style.display = "flex";
 }
@@ -754,6 +839,8 @@ function renderBookingSuccess(booking) {
 
   if (!modalBody) return;
 
+  const totalFareDisplay = booking.total_fare_inr ? `₹${booking.total_fare_inr}` : (booking.fare_inr ? `₹${booking.fare_inr}` : "");
+
   modalBody.innerHTML = `
     <div class="pnr-showcase">
       <span style="font-size:0.8rem; font-weight:700; text-transform:uppercase; color:var(--accent-emerald);">Booking Confirmed!</span>
@@ -762,6 +849,15 @@ function renderBookingSuccess(booking) {
     </div>
 
     <div class="booking-summary-box">
+      ${
+        totalFareDisplay
+          ? `
+      <div class="summary-row">
+        <span class="summary-label">Total Ticket Fare</span>
+        <span class="summary-val" style="color:#fbbf24; font-weight:800; font-size:1.15rem;">${totalFareDisplay}</span>
+      </div>`
+          : ""
+      }
       <div class="summary-row">
         <span class="summary-label">Class</span>
         <span class="summary-val">${booking.travel_class}</span>
@@ -774,6 +870,25 @@ function renderBookingSuccess(booking) {
         <span class="summary-label">Legs Count</span>
         <span class="summary-val">${booking.legs.length} Leg(s)</span>
       </div>
+      ${
+        booking.legs && booking.legs.length > 0
+          ? `
+        <div class="fare-breakdown-box" style="margin-top:0.6rem;">
+          <span style="font-size:0.75rem; font-weight:700; color:var(--text-secondary); text-transform:uppercase;">Stretch Fare Breakdown</span>
+          ${booking.legs
+            .map(
+              (l) => `
+            <div class="fare-stretch-item">
+              <span><strong>${l.train}</strong> (${l.from_code} ➔ ${l.to_code}) • ${l.travel_class}</span>
+              <span style="color:#fbbf24; font-weight:700;">₹${l.fare_inr || "N/A"}</span>
+            </div>
+          `
+            )
+            .join("")}
+        </div>
+      `
+          : ""
+      }
     </div>
   `;
 
@@ -823,7 +938,7 @@ function openBookingsModal() {
             <span class="pill-badge pill-direct">${b.travel_class}</span>
           </div>
           <div style="font-size: 0.85rem; color: var(--text-primary); margin-top: 0.25rem;">
-            Passenger: <strong>${b.passenger}</strong>
+            Passenger: <strong>${b.passenger}</strong> ${b.total_fare_inr ? `• <span style="color:#fbbf24; font-weight:700;">₹${b.total_fare_inr}</span>` : ""}
           </div>
           <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.15rem;">
             ${b.legs.map((l) => `${l.train} (${l.from_code} ➔ ${l.to_code}) on ${l.date}`).join(" • ")}
