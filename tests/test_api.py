@@ -295,3 +295,44 @@ def test_rate_limiting_search():
             break
     assert got_429, "Expected 429 Too Many Requests after exceeding 30 req/min on /api/search"
     limiter.reset()
+
+
+def test_ndls_cnb_current_trains_and_chronological_stops():
+    from data_source import Timetable
+
+    tt = Timetable()
+
+    # 1. Verify 12004 Shatabdi has exact 9 stops in order
+    s12004 = tt.stops_of("12004")
+    assert len(s12004) == 9, f"Expected 9 stops for 12004 Shatabdi, got {len(s12004)}"
+    expected_codes_12004 = ["NDLS", "GZB", "ALJN", "TDL", "ETW", "PHD", "CNB", "ON", "LJN"]
+    assert [s.station for s in s12004] == expected_codes_12004
+    assert all(s.seq == i for i, s in enumerate(s12004))
+    assert s12004[0].arr is None and s12004[0].dep == 370  # 06:10
+    assert s12004[6].station == "CNB" and s12004[6].arr == 683 and s12004[6].dep == 688  # 11:23 -> 11:28
+    assert s12004[-1].dep is None and s12004[-1].arr == 780  # 13:00
+
+    # 2. Verify 12302 Rajdhani has exact 9 stops in order
+    s12302 = tt.stops_of("12302")
+    assert len(s12302) == 9, f"Expected 9 stops for 12302 Rajdhani, got {len(s12302)}"
+    expected_codes_12302 = ["NDLS", "CNB", "PRYJ", "DDU", "GAYA", "PNME", "DHN", "ASN", "HWH"]
+    assert [s.station for s in s12302] == expected_codes_12302
+    assert all(s.seq == i for i, s in enumerate(s12302))
+
+    # 3. Verify 22436 Vande Bharat has exact 4 stops in order
+    s22436 = tt.stops_of("22436")
+    assert len(s22436) == 4, f"Expected 4 stops for 22436 Vande Bharat, got {len(s22436)}"
+    expected_codes_22436 = ["NDLS", "CNB", "PRYJ", "BSB"]
+    assert [s.station for s in s22436] == expected_codes_22436
+    assert all(s.seq == i for i, s in enumerate(s22436))
+
+    # 4. Search NDLS to CNB via API and verify real trains are returned
+    res = client.get(
+        f"/api/search?from_station=NDLS&to_station=CNB&travel_date={tomorrow}&earliest=00:00&sort=fastest&limit=20"
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["success"] is True
+    found_trains = {j["legs"][0]["train"] for j in data["journeys"]}
+    assert "22436" in found_trains or "12004" in found_trains
+
