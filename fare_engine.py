@@ -207,6 +207,14 @@ def calculate_stretch_fare(
     if total <= 0:
         total = 5
 
+    try:
+        import live_seats
+        live_f = live_seats.get_live_fare(from_station, to_station, cls)
+        if live_f is not None:
+            total = int(live_f)
+    except Exception:
+        pass
+
     return {
         "from_station": from_station,
         "to_station": to_station,

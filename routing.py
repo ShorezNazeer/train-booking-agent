@@ -89,6 +89,7 @@ def find_direct(tt: Timetable, from_codes, to_codes,
     (minutes since midnight). A train counts if one class has seats for the whole
     ride, or if the ride can be covered by changing class along the way.
     Trains are assumed to run daily."""
+    live_seats.reset_search_quota()
     legs = []
     classes = tuple(preferred_classes) if preferred_classes else None
     for r in tt.direct_trains(from_codes, to_codes):
@@ -110,6 +111,7 @@ def find_direct(tt: Timetable, from_codes, to_codes,
         if depart < earliest:
             continue
         run_day = seg.run_date(travel_date, r["depart"])
+        is_top = (len(legs) == 0)
         got = live_seats.materialize_leg_seats(
             tt,
             train=r["train"],
@@ -121,6 +123,7 @@ def find_direct(tt: Timetable, from_codes, to_codes,
             leg_depart=depart,
             board_dep=r["depart"],
             preferred_classes=effective_classes,
+            allow_live=is_top,
         )
         if got is None:
             continue
@@ -236,7 +239,12 @@ class _Label:
     parent: Optional["_Label"]
 
 
-def _materialize(tt: Timetable, raw: _RawLeg, preferred_classes: Optional[Tuple[str, ...]] = None) -> Leg:
+def _materialize(
+    tt: Timetable,
+    raw: _RawLeg,
+    preferred_classes: Optional[Tuple[str, ...]] = None,
+    allow_live: bool = True,
+) -> Leg:
     t_classes = tt.train_classes(raw.train)
     if preferred_classes:
         matching = tuple(c for c in t_classes if c in preferred_classes)
@@ -255,6 +263,7 @@ def _materialize(tt: Timetable, raw: _RawLeg, preferred_classes: Optional[Tuple[
         leg_depart=raw.depart,
         board_dep=raw.board_dep,
         preferred_classes=classes,
+        allow_live=allow_live,
     )
     assert got is not None, f"no seats on a leg the search accepted: {raw}"
     seats, split = got
@@ -321,6 +330,7 @@ def find_routes(tt: Timetable, from_codes, to_codes, travel_date: date,
     limit = earliest + horizon
     forced = seg.forced_trains()
     classes = tuple(preferred_classes) if preferred_classes else None
+    live_seats.reset_search_quota()
 
     frontier = {c: _Label(earliest, None, None) for c in from_codes}
     best = {c: earliest for c in from_codes}   # earliest arrival seen per station
@@ -390,8 +400,14 @@ def find_routes(tt: Timetable, from_codes, to_codes, travel_date: date,
         if reached:
             lab = min(reached, key=lambda x: x.arrive)
             legs = []
+            is_top = (len(journeys) == 0)
             while lab.leg is not None:
-                legs.append(_materialize(tt, lab.leg, preferred_classes=classes))
+                legs.append(_materialize(
+                    tt,
+                    lab.leg,
+                    preferred_classes=classes,
+                    allow_live=is_top,
+                ))
                 lab = lab.parent
             legs_tuple = tuple(reversed(legs))
             tot_fare, bdown = fare_engine.calculate_journey_fare(legs_tuple, preferred_classes=classes)
@@ -407,6 +423,7 @@ def find_routes(tt: Timetable, from_codes, to_codes, travel_date: date,
 def plan_trip(tt: Timetable, from_text: str, to_text: str, travel_date: date,
               earliest: int = 0, preferred_classes: Optional[Tuple[str, ...]] = None, **kwargs) -> list:
     """Direct trains if any can be ridden; otherwise the best multi-leg routes."""
+    live_seats.reset_search_quota()
     src = tt.resolve_station(from_text)
     dst = tt.resolve_station(to_text)
     if not src:
