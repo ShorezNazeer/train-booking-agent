@@ -16,13 +16,16 @@ def test_universal_class_inference_patterns():
     assert infer_classes("HWH RAJDHANI") == ["1A", "2A", "3A"]
     assert infer_classes("MUMBAI RAJDHANI EXPRESS") == ["1A", "2A", "3A"]
 
-    # 2. VANDE BHARAT, TEJAS, GATIMAAN, DOUBLE DECKER, SHATABDI (excluding JAN SHATABDI) -> ['CC', 'EC']
+    # 2. VANDE BHARAT, TEJAS, GATIMAAN, SHATABDI (excluding JAN SHATABDI) -> ['CC', 'EC']
     assert infer_classes("VANDE BHARAT EX", "VNDB") == ["CC", "EC"]
     assert infer_classes("TEJAS EXPRESS", "TEJ") == ["CC", "EC"]
     assert infer_classes("GATIMAAN EXPRESS", "GT") == ["CC", "EC"]
-    assert infer_classes("LJN DOUBLE DKR", "DD") == ["CC", "EC"]
-    assert infer_classes("JAIPUR DOUBLE DECKER") == ["CC", "EC"]
     assert infer_classes("SHATABDI EXPRESS", "SHT") == ["CC", "EC"]
+
+    # DOUBLE DECKER -> ['CC']
+    assert infer_classes("LJN DOUBLE DKR", "DD") == ["CC"]
+    assert infer_classes("JAIPUR DOUBLE DECKER") == ["CC"]
+    assert infer_classes("ANVT DOUBLE DKR") == ["CC"]
 
     # 3. JAN SHATABDI -> ['2S', 'CC'] (must not be treated as Shatabdi)
     assert infer_classes("NDLS JAN SHATABDI", "JSH") == ["2S", "CC"]
@@ -92,8 +95,12 @@ def test_weekday_filtering_alternate_day_trains():
 
 
 def test_sl_only_filter_never_returns_all_ac_trains():
-    """Ensure searching with preferred_classes=['SL'] never returns all-AC trains."""
+    """Ensure searching with preferred_classes=['SL'] never returns all-AC trains,
+    including 12583 ANVT DOUBLE DKR which must be ['CC'] only, and never switches into non-SL classes."""
     tt = Timetable()
+    assert tt.train_classes("12583") == ["CC"]
+    assert tt.train_classes("12584") == ["CC"]
+
     d = datetime.date(2026, 11, 23)
 
     # Route DBRG -> NDLS contains Rajdhani trains (20505, 12423) which are 1A,2A,3A only
@@ -107,7 +114,49 @@ def test_sl_only_filter_never_returns_all_ac_trains():
     for leg in sl_ndls_cnb:
         t_classes = tt.train_classes(leg.train)
         assert "SL" in t_classes, f"Train {leg.train} ({leg.name}) without SL returned for SL search"
-        assert leg.train not in ("22436", "12424", "12878", "12004")
+        assert leg.train not in ("22436", "12424", "12878", "12004", "12583")
+        # Ensure seats only contain SL
+        assert set(leg.seats.keys()).issubset({"SL"})
+        # Ensure split plan (if any) never switches to non-SL classes
+        for piece in leg.split:
+            assert piece.travel_class == "SL"
+
+    # Route LKO -> NDLS / ANVT: verify 12583 is never returned for SL Only
+    lko_delhi_sl = plan_trip(tt, "Lucknow", "Delhi", d, preferred_classes=["SL"])
+    for j in lko_delhi_sl:
+        for leg in j.legs:
+            assert leg.train != "12583"
+            assert set(leg.seats.keys()).issubset({"SL"})
+            for piece in leg.split:
+                assert piece.travel_class == "SL"
+
+
+def test_sl_only_never_switches_into_non_sl_classes():
+    """Verify that when SL is forced sold out on part of a route and 3A is available,
+    searching with preferred_classes=['SL'] rejects the journey rather than switching to 3A."""
+    tt = Timetable()
+    d = datetime.date(2026, 11, 23)
+    train_no = "12229"  # Lucknow Mail
+
+    tools.reset_demo()
+
+    stops = tt.stops_of(train_no)
+    mid_idx = len(stops) // 2
+
+    # Force SL sold out on second half, 3A available on second half
+    for s in range(mid_idx, len(stops) - 1):
+        seg.FORCED_SEGMENT_SOLD_OUT.add((train_no, "SL", s))
+        seg.FORCED_SEGMENT_AVAILABLE[(train_no, "3A", s)] = 10
+
+    # Search with preferred_classes=['SL']
+    routes = find_direct(tt, ["LKO"], ["NDLS"], d, preferred_classes=["SL"])
+    for leg in routes:
+        if leg.train == train_no:
+            assert set(leg.seats.keys()).issubset({"SL"})
+            for p in leg.split:
+                assert p.travel_class == "SL"
+
+    tools.reset_demo()
 
 
 @pytest.fixture

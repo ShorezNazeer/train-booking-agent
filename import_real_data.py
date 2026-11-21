@@ -74,8 +74,12 @@ def infer_classes(train_name: str, train_type: str = "") -> list[str]:
     if "JAN SHATABDI" in name or "JANSHATABDI" in name or ttype == "JSH":
         return ["2S", "CC"]
 
-    # 3. VANDE BHARAT, TEJAS, GATIMAAN, DOUBLE DECKER, and SHATABDI (excluding JAN SHATABDI) -> ['CC', 'EC']
-    if any(k in name for k in ["VANDE BHARAT", "TEJAS", "GATIMAAN", "DOUBLE DECKER", "DOUBLE DKR", "SHATABDI"]) or ttype in (
+    # DOUBLE DECKER -> ['CC']
+    if "DOUBLE DECKER" in name or "DOUBLE DKR" in name or ttype == "DD":
+        return ["CC"]
+
+    # 3. VANDE BHARAT, TEJAS, GATIMAAN, and SHATABDI (excluding JAN SHATABDI) -> ['CC', 'EC']
+    if any(k in name for k in ["VANDE BHARAT", "TEJAS", "GATIMAAN", "SHATABDI"]) or ttype in (
         "SHT", "VNDB", "VNDM", "VNDS", "TEJ", "GT"
     ):
         return ["CC", "EC"]

@@ -1434,3 +1434,75 @@ body {
     transform: translateY(0);
   }
 }
+
+/* Honest Pre-Chart vs Post-Chart Banners */
+.chart-status-banner {
+  margin: 0.75rem 0 0.85rem 0;
+  padding: 0.65rem 0.9rem;
+  border-radius: var(--radius-md);
+  font-size: 0.82rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  border: 1px solid var(--border-color);
+}
+
+.chart-status-banner.pre-chart {
+  background: rgba(30, 41, 59, 0.45);
+  border-color: rgba(71, 85, 105, 0.4);
+}
+
+.chart-status-banner.post-chart {
+  background: rgba(16, 185, 129, 0.08);
+  border-color: rgba(16, 185, 129, 0.35);
+}
+
+.chart-status-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.chart-status-timing {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.chart-coach-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.chart-coach-badge {
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.15rem 0.45rem;
+  background: rgba(59, 130, 246, 0.2);
+  color: var(--accent-cyan);
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.chart-coach-text {
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+}
+
+.chart-coach-text strong {
+  color: var(--text-primary);
+}
+
+.pill-prechart {
+  background: rgba(100, 116, 139, 0.2);
+  color: #cbd5e1;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+}
+
+.pill-postchart {
+  background: rgba(16, 185, 129, 0.2);
+  color: var(--accent-emerald);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+}

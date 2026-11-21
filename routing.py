@@ -132,6 +132,8 @@ def find_direct(tt: Timetable, from_codes, to_codes,
             if seats:
                 seats = {c: n for c, n in seats.items() if c in classes}
             if split:
+                if any(p.travel_class not in classes for p in split):
+                    continue
                 split = tuple(p for p in split if p.travel_class in classes)
             if not seats and not split:
                 continue
@@ -244,11 +246,13 @@ def _materialize(
     raw: _RawLeg,
     preferred_classes: Optional[Tuple[str, ...]] = None,
     allow_live: bool = True,
-) -> Leg:
+) -> Optional[Leg]:
     t_classes = tt.train_classes(raw.train)
     if preferred_classes:
         matching = tuple(c for c in t_classes if c in preferred_classes)
-        classes = matching or tuple(preferred_classes)
+        if not matching:
+            return None
+        classes = matching
     else:
         classes = tuple(t_classes)
 
@@ -265,13 +269,18 @@ def _materialize(
         preferred_classes=classes,
         allow_live=allow_live,
     )
-    assert got is not None, f"no seats on a leg the search accepted: {raw}"
+    if got is None:
+        return None
     seats, split = got
     if classes:
         if seats:
             seats = {c: n for c, n in seats.items() if c in classes}
         if split:
+            if any(p.travel_class not in classes for p in split):
+                return None
             split = tuple(p for p in split if p.travel_class in classes)
+        if not seats and not split:
+            return None
 
     split_with_fares = []
     for p in split:
@@ -401,17 +410,23 @@ def find_routes(tt: Timetable, from_codes, to_codes, travel_date: date,
             lab = min(reached, key=lambda x: x.arrive)
             legs = []
             is_top = (len(journeys) == 0)
+            valid = True
             while lab.leg is not None:
-                legs.append(_materialize(
+                leg = _materialize(
                     tt,
                     lab.leg,
                     preferred_classes=classes,
                     allow_live=is_top,
-                ))
+                )
+                if leg is None:
+                    valid = False
+                    break
+                legs.append(leg)
                 lab = lab.parent
-            legs_tuple = tuple(reversed(legs))
-            tot_fare, bdown = fare_engine.calculate_journey_fare(legs_tuple, preferred_classes=classes)
-            journeys.append(Journey(legs_tuple, total_fare_inr=tot_fare, fare_breakdown=bdown))
+            if valid and legs:
+                legs_tuple = tuple(reversed(legs))
+                tot_fare, bdown = fare_engine.calculate_journey_fare(legs_tuple, preferred_classes=classes)
+                journeys.append(Journey(legs_tuple, total_fare_inr=tot_fare, fare_breakdown=bdown))
         for c in to_set:
             new.pop(c, None)        # no need to continue past the destination
         if not new:

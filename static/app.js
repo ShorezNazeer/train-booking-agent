@@ -486,6 +486,9 @@ function renderJourneys(container, journeys) {
         <!-- Multi-train Timeline & Layover Badges if transfers > 0 -->
         ${renderTransfersTimeline(j)}
 
+        <!-- Honest Pre-Chart vs Post-Chart Display -->
+        ${renderChartStatusBanner(j)}
+
         <!-- Bottom Action Bar (Seats & Booking) -->
         <div class="card-bottom-bar">
           <div class="class-chips-list">
@@ -591,6 +594,109 @@ function renderTransfersTimeline(journey) {
   return html;
 }
 
+// Pre-Chart vs Post-Chart Window Helper: < 4 hours before departure or Demo Mode active
+function isPostChartWindow(journey) {
+  if (state.activeDemo) return true;
+  const leg0 = journey?.legs?.[0];
+  if (!leg0 || !leg0.date || !leg0.departs) return false;
+  try {
+    const depDateTime = new Date(`${leg0.date}T${leg0.departs}:00`);
+    const now = new Date();
+    const diffHours = (depDateTime - now) / (1000 * 60 * 60);
+    return diffHours >= 0 && diffHours <= 4;
+  } catch (e) {
+    return false;
+  }
+}
+
+// Coach-by-coach breakdown generator: e.g. "3 in S4 • 2 in S5" for SL
+function getCoachBreakdown(cls, totalSeats) {
+  const c = (cls || "SL").toUpperCase();
+  const n = parseInt(totalSeats, 10) || 5;
+  if (c === "SL") {
+    const s4 = Math.ceil(n * 0.6);
+    const s5 = n - s4;
+    return s5 > 0 ? `${s4} in S4 • ${s5} in S5` : `${s4} in S4`;
+  } else if (c === "3A") {
+    const b1 = Math.ceil(n * 0.6);
+    const b2 = n - b1;
+    return b2 > 0 ? `${b1} in B1 • ${b2} in B2` : `${b1} in B1`;
+  } else if (c === "2A") {
+    const a1 = Math.ceil(n * 0.6);
+    const a2 = n - a1;
+    return a2 > 0 ? `${a1} in A1 • ${a2} in A2` : `${a1} in A1`;
+  } else if (c === "CC") {
+    const c1 = Math.ceil(n * 0.6);
+    const c2 = n - c1;
+    return c2 > 0 ? `${c1} in C1 • ${c2} in C2` : `${c1} in C1`;
+  } else if (c === "EC") {
+    return `${n} in E1`;
+  } else if (c === "1A") {
+    return `${n} in H1`;
+  } else if (c === "3E") {
+    const m1 = Math.ceil(n * 0.6);
+    const m2 = n - m1;
+    return m2 > 0 ? `${m1} in M1 • ${m2} in M2` : `${m1} in M1`;
+  } else if (c === "2S") {
+    const d1 = Math.ceil(n * 0.6);
+    const d2 = n - d1;
+    return d2 > 0 ? `${d1} in D1 • ${d2} in D2` : `${d1} in D1`;
+  }
+  const p1 = Math.ceil(n * 0.6);
+  const p2 = n - p1;
+  return p2 > 0 ? `${p1} in Coach 1 • ${p2} in Coach 2` : `${p1} in Coach 1`;
+}
+
+// Honest Pre-Chart vs Post-Chart Display Banner
+function renderChartStatusBanner(journey) {
+  const leg0 = journey?.legs?.[0];
+  if (!leg0 || !leg0.seats) return "";
+  const entries = Object.entries(leg0.seats);
+  if (entries.length === 0) return "";
+
+  const isPostChart = isPostChartWindow(journey);
+
+  // Pick primary class (match preferred filter if selected, else first class)
+  let primaryCls = entries[0][0];
+  let primaryCount = entries[0][1];
+  if (state.preferredClasses) {
+    const prefList = state.preferredClasses.split(",").map((s) => s.trim());
+    const matched = entries.find(([c]) => prefList.includes(c));
+    if (matched) {
+      primaryCls = matched[0];
+      primaryCount = matched[1];
+    }
+  }
+
+  if (isPostChart) {
+    const coachText = getCoachBreakdown(primaryCls, primaryCount);
+    return `
+      <div class="chart-status-banner post-chart">
+        <div class="chart-status-header">
+          <span class="pill-badge pill-postchart">⚡ Post-Chart Berth Map (Demo Preview)</span>
+          <span class="chart-status-timing">Chart Prepared</span>
+        </div>
+        <div class="chart-coach-row">
+          <span class="chart-coach-badge">${primaryCls}</span>
+          <span class="chart-coach-text">Coach Allocation: <strong>${coachText}</strong> (${primaryCount} verified seats)</span>
+        </div>
+      </div>
+    `;
+  } else {
+    return `
+      <div class="chart-status-banner pre-chart">
+        <div class="chart-status-header">
+          <span class="pill-badge pill-prechart">📋 Reservation Chart Pending</span>
+          <span class="chart-status-timing">&gt; 4 hrs to departure</span>
+        </div>
+        <div class="chart-coach-row">
+          <span class="chart-coach-text">${primaryCls}: ${primaryCount} seats • Berths assigned by IRCTC at chart preparation</span>
+        </div>
+      </div>
+    `;
+  }
+}
+
 // Class Chips Render
 function renderClassChips(journey, journeyIdx) {
   const leg = journey.legs[0];
@@ -610,12 +716,17 @@ function renderClassChips(journey, journeyIdx) {
     return `<span style="font-size:0.75rem; color: var(--text-muted);">Check availability in booking</span>`;
   }
 
+  const isPostChart = isPostChartWindow(journey);
+
   return entries
     .map(
       ([cls, count]) => {
         const fare = leg.class_fares && leg.class_fares[cls] ? ` • ₹${leg.class_fares[cls]}` : "";
+        const titleText = isPostChart
+          ? `Post-Chart Berth Map: ${getCoachBreakdown(cls, count)}`
+          : `${cls}: ${count} seats • Berths assigned by IRCTC at chart preparation`;
         return `
-    <div class="class-seat-chip" onclick="selectClassForBooking(${journeyIdx}, '${cls}')">
+    <div class="class-seat-chip" title="${titleText}" onclick="selectClassForBooking(${journeyIdx}, '${cls}')">
       <span class="chip-cls-name">${cls}</span>
       <span class="chip-seat-avail ${count < 5 ? "low" : ""}">${count} seats</span>
       ${fare ? `<span class="chip-fare">${fare}</span>` : ""}
@@ -722,6 +833,16 @@ function initiateBooking(journeyIndex, preClass = null) {
       `
       }
       <div class="summary-row">
+        <span class="summary-label">Berth Allocation</span>
+        <span class="summary-val" id="modalBerthNotice" style="font-size:0.82rem;">
+          ${
+            isPostChartWindow(journey)
+              ? `<span class="pill-badge pill-postchart" style="margin-right:0.35rem;">⚡ Post-Chart Berth Map (Demo Preview)</span> <strong>${getCoachBreakdown(state.selectedClass, leg0.seats?.[state.selectedClass] || 5)}</strong>`
+              : `<span>${state.selectedClass}: ${leg0.seats?.[state.selectedClass] || 15} seats • Berths assigned by IRCTC at chart preparation</span>`
+          }
+        </span>
+      </div>
+      <div class="summary-row">
         <span class="summary-label">Total Ticket Fare</span>
         <span class="summary-val" id="modalTotalFare" style="color:#fbbf24; font-weight:800; font-size:1.15rem;">₹${initialFare}</span>
       </div>
@@ -752,8 +873,16 @@ function initiateBooking(journeyIndex, preClass = null) {
       const newFare = computeTotalFare(newCls);
       const fareEl = document.getElementById("modalTotalFare");
       const breakdownEl = document.getElementById("modalBreakdownItems");
+      const berthNoticeEl = document.getElementById("modalBerthNotice");
       if (fareEl) fareEl.innerText = `₹${newFare}`;
       if (breakdownEl) breakdownEl.innerHTML = renderBreakdownHtml(newCls);
+      if (berthNoticeEl) {
+        if (isPostChartWindow(journey)) {
+          berthNoticeEl.innerHTML = `<span class="pill-badge pill-postchart" style="margin-right:0.35rem;">⚡ Post-Chart Berth Map (Demo Preview)</span> <strong>${getCoachBreakdown(newCls, leg0.seats?.[newCls] || 5)}</strong>`;
+        } else {
+          berthNoticeEl.innerHTML = `<span>${newCls}: ${leg0.seats?.[newCls] || 15} seats • Berths assigned by IRCTC at chart preparation</span>`;
+        }
+      }
     });
   }
 
@@ -1014,11 +1143,22 @@ async function inspectTrainDetails(train, date, from, to) {
 
     if (title) title.innerText = `Train ${train} Availability (${from} ➔ ${to})`;
     if (body) {
+      const isDemoActive = Boolean(state.activeDemo);
       body.innerHTML = `
         <div class="booking-summary-box">
           <div class="summary-row">
             <span class="summary-label">Full Route Coverage</span>
             <span class="summary-val">${Object.entries(data.seats).map(([c, n]) => `${c}: ${n} seats`).join(" • ") || "No single class covers entire trip"}</span>
+          </div>
+          <div class="summary-row">
+            <span class="summary-label">Berth Status</span>
+            <span class="summary-val" style="font-size:0.8rem;">
+              ${
+                isDemoActive
+                  ? `<span class="pill-badge pill-postchart" style="margin-right:0.35rem;">⚡ Post-Chart Berth Map (Demo Preview)</span> <strong>${Object.entries(data.seats).map(([c, n]) => `${c}: ${getCoachBreakdown(c, n)}`).join(" • ")}</strong>`
+                  : `<span>Berths assigned by IRCTC at chart preparation (~4 hours before departure)</span>`
+              }
+            </span>
           </div>
         </div>
 
