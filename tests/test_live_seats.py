@@ -436,3 +436,163 @@ def test_quota_guardrails_capping_and_top_candidate_only(monkeypatch):
         assert res_top3 == ({"3A": 15}, ())
         assert mock_urlopen.call_count == 2  # Capped at 2! No 3rd HTTP call!
         assert mock_fallback.call_count == 2  # Fell back cleanly to segments.py
+
+
+def test_rapidapi_diagnostics_logging_and_waitlist(monkeypatch, caplog):
+    """Verify logging of RAILWAY_API_KEY detection and exact HTTP status + current_status strings."""
+    import logging
+    caplog.set_level(logging.INFO)
+
+    # 1. Test startup logging when key is unset
+    monkeypatch.delenv("RAILWAY_API_KEY", raising=False)
+    live_seats.log_startup_api_key()
+    assert any("RAILWAY_API_KEY detected at startup: NO" in r.message for r in caplog.records)
+
+    # 2. Test startup logging when key is set
+    caplog.clear()
+    monkeypatch.setenv("RAILWAY_API_KEY", "test_rapidapi_secret_key_12345")
+    live_seats.log_startup_api_key()
+    assert any("RAILWAY_API_KEY detected at startup: YES" in r.message for r in caplog.records)
+
+    # 3. Test exact HTTP 200 and current_status string logging (including WL)
+    caplog.clear()
+    mock_payload = {
+        "status": True,
+        "data": [
+            {
+                "date": "20-11-2026",
+                "current_status": "RLWL/WL 25",
+                "total_fare": 785,
+            }
+        ],
+    }
+    mock_body = json.dumps(mock_payload).encode("utf-8")
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.read.return_value = mock_body
+    mock_resp.__enter__.return_value = mock_resp
+
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        res = live_seats.query_irctc1_api(
+            train_no="12302",
+            from_station="NDLS",
+            to_station="CNB",
+            class_type="3A",
+            travel_date_str="20-11-2026",
+            api_key="test_rapidapi_secret_key_12345",
+        )
+        assert res == (0, 785)
+        # Verify log contains exact HTTP 200 and exact current_status: 'RLWL/WL 25'
+        matching = [r for r in caplog.records if "RapidAPI irctc1 response: HTTP 200" in r.message]
+        assert len(matching) >= 1
+        assert "current_status: 'RLWL/WL 25'" in matching[0].message
+
+
+def test_waitlist_never_falls_back_to_fake_available_seats(monkeypatch):
+    """When a train is checked and waitlisted, verify it never falls back to segments.py fake seats."""
+    monkeypatch.setenv("RAILWAY_API_KEY", "rapid_key_test_123")
+    live_seats.clear_cache()
+    live_seats.reset_search_quota()
+
+    tt = MagicMock(spec=Timetable)
+    # Train has 3A, 2A, SL, but query budget only checks first 2
+    tt.train_classes.return_value = ["3A", "2A", "SL"]
+
+    mock_payload = {
+        "status": True,
+        "data": [
+            {
+                "date": "20-11-2026",
+                "current_status": "GNWL/15",
+                "total_fare": 750,
+            }
+        ],
+    }
+    mock_body = json.dumps(mock_payload).encode("utf-8")
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.read.return_value = mock_body
+    mock_resp.__enter__.return_value = mock_resp
+
+    with patch("urllib.request.urlopen", return_value=mock_resp), \
+         patch("live_seats.fallback_segment_seats", return_value=({"3A": 15, "SL": 15}, ())) as mock_fallback:
+        res = live_seats.materialize_leg_seats(
+            tt=tt,
+            train="12424",
+            from_station="NDLS",
+            to_station="CNB",
+            run_day=date(2026, 11, 20),
+            board_seq=0,
+            alight_seq=2,
+            leg_depart=980,
+            board_dep=980,
+            allow_live=True,
+        )
+        # All checked classes were waitlisted (0 available seats) -> MUST be None, NOT fake fallback!
+        assert res is None
+        mock_fallback.assert_not_called()
+
+
+def test_availability_source_tagging_live_vs_simulated(monkeypatch):
+    """Verify availability_source / source tags: 'live_irctc' vs 'simulated_estimate'."""
+    monkeypatch.setenv("RAILWAY_API_KEY", "rapid_key_test_123")
+    live_seats.clear_cache()
+    live_seats.reset_search_quota()
+
+    tt = MagicMock(spec=Timetable)
+    tt.train_classes.return_value = ["3A"]
+
+    mock_payload = {
+        "status": True,
+        "data": [
+            {
+                "date": "20-11-2026",
+                "current_status": "AVAILABLE-0042",
+                "total_fare": 695,
+            }
+        ],
+    }
+    mock_body = json.dumps(mock_payload).encode("utf-8")
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.read.return_value = mock_body
+    mock_resp.__enter__.return_value = mock_resp
+
+    # 1. Live IRCTC hit -> source: 'live_irctc'
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        res_live = live_seats.materialize_leg_seats(
+            tt=tt,
+            train="12004",
+            from_station="NDLS",
+            to_station="CNB",
+            run_day=date(2026, 11, 20),
+            board_seq=0,
+            alight_seq=5,
+            leg_depart=375,
+            board_dep=375,
+            preferred_classes=("3A",),
+            allow_live=True,
+        )
+        assert res_live is not None
+        assert res_live.source == "live_irctc"
+        assert res_live.availability_source == "live_irctc"
+
+    # 2. Fallback / offline estimate -> source: 'simulated_estimate'
+    monkeypatch.delenv("RAILWAY_API_KEY", raising=False)
+    live_seats.clear_cache()
+    with patch("live_seats.fallback_segment_seats", return_value=live_seats.LegSeatsResult({"3A": 15}, (), source="simulated_estimate")):
+        res_offline = live_seats.materialize_leg_seats(
+            tt=tt,
+            train="12004",
+            from_station="NDLS",
+            to_station="CNB",
+            run_day=date(2026, 11, 20),
+            board_seq=0,
+            alight_seq=5,
+            leg_depart=375,
+            board_dep=375,
+            preferred_classes=("3A",),
+        )
+        assert res_offline is not None
+        assert res_offline.source == "simulated_estimate"
+        assert res_offline.availability_source == "simulated_estimate"

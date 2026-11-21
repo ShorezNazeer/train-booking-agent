@@ -453,6 +453,7 @@ function renderJourneys(container, journeys) {
             </div>
           </div>
           <div class="journey-badges-group">
+            ${renderSourceBadge(j.availability_source || (j.legs && j.legs[0]?.availability_source))}
             ${j.total_fare_inr ? `<span class="pill-badge pill-price">₹${j.total_fare_inr}</span>` : ""}
             ${isFastest ? '<span class="pill-badge pill-fastest">⚡ Fastest</span>' : ""}
             ${isDirect ? '<span class="pill-badge pill-direct">Direct</span>' : `<span class="pill-badge pill-transfers">${j.transfers} Transfer</span>`}
@@ -509,6 +510,14 @@ function renderJourneys(container, journeys) {
     .join("");
 }
 
+// Data Source Badge Helper: 🟢 Live IRCTC vs ⚪ Offline Estimate
+function renderSourceBadge(source) {
+  const isLive = source === "live_irctc";
+  return `<span class="pill-badge ${isLive ? "pill-source-live" : "pill-source-offline"}" title="${
+    isLive ? "Verified live with IRCTC RapidAPI / cache" : "Simulated offline timetable estimate"
+  }">${isLive ? "🟢 Live IRCTC" : "⚪ Offline Estimate"}</span>`;
+}
+
 // Visual Segmented Bar for Mid-Route Class Change
 function renderSegmentedBar(journey) {
   const splitLeg = journey.legs.find((l) => l.needs_class_change && l.class_plan && l.class_plan.length > 0);
@@ -534,6 +543,7 @@ function renderSegmentedBar(journey) {
               <div class="slice-route">
                 <span class="slice-badge">${slice.travel_class}</span>
                 <span>${slice.from_code} ➔ ${slice.to_code}</span>
+                <span style="margin-left: auto;">${renderSourceBadge(slice.availability_source || slice.source)}</span>
               </div>
               <div class="slice-seats">
                 <span>${slice.seats} seats (${slice.departs} - ${slice.arrives})</span>
@@ -564,13 +574,14 @@ function renderTransfersTimeline(journey) {
         <div>
           <span class="train-badge-num">${leg.train}</span>
           <strong style="margin-left: 0.5rem;">${leg.train_name}</strong>
+          <span style="margin-left: 0.5rem;">${renderSourceBadge(leg.availability_source || leg.source)}</span>
           <div style="font-size: 0.78rem; color: var(--text-secondary); margin-top: 0.2rem;">
             ${leg.from_name} (${leg.departs}) ➔ ${leg.to_name} (${leg.arrives})
           </div>
         </div>
         <div style="font-size: 0.75rem; text-align: right; color: var(--accent-emerald);">
           ${Object.entries(leg.seats)
-            .map(([c, n]) => `${c}: ${n}`)
+            .map(([c, n]) => `${c}: ${n === 0 || n === 'WL' ? 'WL' : n}`)
             .join(" • ") || (leg.needs_class_change ? "Class Change Plan" : "Available")}
         </div>
       </div>
@@ -668,8 +679,12 @@ function renderChartStatusBanner(journey) {
     }
   }
 
+  const isWl = primaryCount === 0 || primaryCount === "WL";
+  const countDisplay = isWl ? "WL" : `${primaryCount} seats`;
+  const verifiedText = isWl ? "WL" : `${primaryCount} verified seats`;
+
   if (isPostChart) {
-    const coachText = getCoachBreakdown(primaryCls, primaryCount);
+    const coachText = isWl ? "Waitlist (No Berths Assigned)" : getCoachBreakdown(primaryCls, primaryCount);
     return `
       <div class="chart-status-banner post-chart">
         <div class="chart-status-header">
@@ -678,7 +693,7 @@ function renderChartStatusBanner(journey) {
         </div>
         <div class="chart-coach-row">
           <span class="chart-coach-badge">${primaryCls}</span>
-          <span class="chart-coach-text">Coach Allocation: <strong>${coachText}</strong> (${primaryCount} verified seats)</span>
+          <span class="chart-coach-text">Coach Allocation: <strong>${coachText}</strong> (${verifiedText})</span>
         </div>
       </div>
     `;
@@ -690,7 +705,7 @@ function renderChartStatusBanner(journey) {
           <span class="chart-status-timing">&gt; 4 hrs to departure</span>
         </div>
         <div class="chart-coach-row">
-          <span class="chart-coach-text">${primaryCls}: ${primaryCount} seats • Berths assigned by IRCTC at chart preparation</span>
+          <span class="chart-coach-text">${primaryCls}: ${countDisplay} • Berths assigned by IRCTC at chart preparation</span>
         </div>
       </div>
     `;
@@ -722,13 +737,15 @@ function renderClassChips(journey, journeyIdx) {
     .map(
       ([cls, count]) => {
         const fare = leg.class_fares && leg.class_fares[cls] ? ` • ₹${leg.class_fares[cls]}` : "";
+        const isWl = count === 0 || count === "WL";
+        const countDisplay = isWl ? "WL" : `${count} seats`;
         const titleText = isPostChart
-          ? `Post-Chart Berth Map: ${getCoachBreakdown(cls, count)}`
-          : `${cls}: ${count} seats • Berths assigned by IRCTC at chart preparation`;
+          ? `Post-Chart Berth Map: ${isWl ? "WL (No Berths Allocated)" : getCoachBreakdown(cls, count)}`
+          : `${cls}: ${countDisplay} • Berths assigned by IRCTC at chart preparation`;
         return `
-    <div class="class-seat-chip" title="${titleText}" onclick="selectClassForBooking(${journeyIdx}, '${cls}')">
+    <div class="class-seat-chip ${isWl ? "chip-wl" : ""}" title="${titleText}" onclick="selectClassForBooking(${journeyIdx}, '${cls}')">
       <span class="chip-cls-name">${cls}</span>
-      <span class="chip-seat-avail ${count < 5 ? "low" : ""}">${count} seats</span>
+      <span class="chip-seat-avail ${isWl || (typeof count === "number" && count < 5) ? "low" : ""}">${countDisplay}</span>
       ${fare ? `<span class="chip-fare">${fare}</span>` : ""}
     </div>
   `;
@@ -805,6 +822,10 @@ function initiateBooking(journeyIndex, preClass = null) {
       <div class="summary-row">
         <span class="summary-label">Departure</span>
         <span class="summary-val">${journey.departs} (${formatDateStr(journey.legs[0].date)})</span>
+      </div>
+      <div class="summary-row">
+        <span class="summary-label">Availability Source</span>
+        <span class="summary-val">${renderSourceBadge(journey.availability_source || (journey.legs && journey.legs[0]?.availability_source))}</span>
       </div>
       <div class="summary-row">
         <span class="summary-label">Total Duration</span>
@@ -1146,6 +1167,10 @@ async function inspectTrainDetails(train, date, from, to) {
       const isDemoActive = Boolean(state.activeDemo);
       body.innerHTML = `
         <div class="booking-summary-box">
+          <div class="summary-row">
+            <span class="summary-label">Availability Source</span>
+            <span class="summary-val">${renderSourceBadge(data.availability_source || data.source || 'simulated_estimate')}</span>
+          </div>
           <div class="summary-row">
             <span class="summary-label">Full Route Coverage</span>
             <span class="summary-val">${Object.entries(data.seats).map(([c, n]) => `${c}: ${n} seats`).join(" • ") || "No single class covers entire trip"}</span>

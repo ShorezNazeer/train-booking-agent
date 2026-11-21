@@ -30,6 +30,36 @@ from data_source import DB_PATH, Timetable
 import segments as seg
 
 logger = logging.getLogger(__name__)
+if not logging.getLogger().handlers:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+
+class LegSeatsResult(tuple):
+    """A 2-tuple (seats, split) carrying availability source ('live_irctc' or 'simulated_estimate')."""
+    source: str
+    availability_source: str
+
+    def __new__(cls, seats: dict, split: tuple = (), source: str = "simulated_estimate"):
+        obj = super().__new__(cls, (seats, split))
+        obj.source = source
+        obj.availability_source = source
+        return obj
+
+
+def log_startup_api_key() -> bool:
+    """Log whether RAILWAY_API_KEY is detected at startup."""
+    key = os.environ.get("RAILWAY_API_KEY", "").strip() or None
+    if key:
+        masked = key[:4] + "..." + key[-4:] if len(key) > 8 else "***"
+        logger.info("RapidAPI Diagnostics: RAILWAY_API_KEY detected at startup: YES (%s, len=%d)", masked, len(key))
+        return True
+    else:
+        logger.info("RapidAPI Diagnostics: RAILWAY_API_KEY detected at startup: NO (unset, using offline simulated estimates)")
+        return False
+
+
+# Log startup API key status on module import
+log_startup_api_key()
 
 SEAT_CACHE_TTL_SECONDS = 6 * 3600  # 6 hours TTL
 RAPIDAPI_DEFAULT_URL = "https://irctc1.p.rapidapi.com/api/v1/checkSeatAvailability"
@@ -305,7 +335,13 @@ def parse_irctc1_response(
         return None
 
     curr_status = matched_item.get("current_status") or matched_item.get("status") or ""
-    seats = parse_current_status(str(curr_status))
+    curr_status_str = str(curr_status).strip()
+    seats = parse_current_status(curr_status_str)
+
+    logger.info(
+        "RapidAPI irctc1 response: HTTP 200 for train %s (%s->%s, %s on %s) - current_status: '%s'",
+        train_no, from_station, to_station, class_type, travel_date_str, curr_status_str,
+    )
 
     raw_fare = matched_item.get("total_fare") or matched_item.get("ticket_fare")
     fare = None
@@ -371,23 +407,32 @@ def query_irctc1_api(
                 )
             elif status_code in (403, 429):
                 logger.warning(
-                    "RapidAPI returned HTTP %s for %s (%s->%s): falling back to segments.py",
-                    status_code, train_no, from_station, to_station,
+                    "RapidAPI irctc1 error: HTTP %s for train %s (%s->%s, %s on %s) - falling back cleanly to segments.py",
+                    status_code, train_no, from_station, to_station, class_type, travel_date_str,
+                )
+                return None
+            else:
+                logger.warning(
+                    "RapidAPI irctc1 error: HTTP %s for train %s (%s->%s, %s on %s)",
+                    status_code, train_no, from_station, to_station, class_type, travel_date_str,
                 )
                 return None
     except urllib.error.HTTPError as http_err:
         if http_err.code in (403, 429):
             logger.warning(
-                "RapidAPI HTTP %s (%s): falling back cleanly to segments.py",
-                http_err.code, http_err.reason,
+                "RapidAPI irctc1 HTTP error: HTTP %s (%s) for train %s (%s->%s, %s on %s) - falling back cleanly to segments.py",
+                http_err.code, http_err.reason, train_no, from_station, to_station, class_type, travel_date_str,
             )
         else:
-            logger.warning("RapidAPI HTTP error %s: %s", http_err.code, http_err.reason)
+            logger.warning(
+                "RapidAPI irctc1 HTTP error: HTTP %s (%s) for train %s (%s->%s, %s on %s)",
+                http_err.code, http_err.reason, train_no, from_station, to_station, class_type, travel_date_str,
+            )
         return None
     except Exception as exc:
         logger.warning(
-            "RapidAPI request failed for %s (%s->%s on %s): %s",
-            train_no, from_station, to_station, travel_date_str, exc,
+            "RapidAPI irctc1 request exception for train %s (%s->%s, %s on %s): %s",
+            train_no, from_station, to_station, class_type, travel_date_str, exc,
         )
         return None
 
@@ -515,7 +560,7 @@ def fallback_segment_seats(
     leg_depart: int,
     board_dep: int,
     preferred_classes: Optional[Tuple[str, ...]] = None,
-) -> Optional[Tuple[Dict[str, int], Tuple]]:
+) -> Optional[LegSeatsResult]:
     """Simulated seat availability via segments.py."""
     from routing import Piece
 
@@ -528,7 +573,7 @@ def fallback_segment_seats(
         if classes:
             whole = {c: n for c, n in whole.items() if c in classes}
         if whole:
-            return whole, ()
+            return LegSeatsResult(whole, (), source="simulated_estimate")
     if plan is None:
         return None
     stops = tt.stops_of(train)
@@ -541,8 +586,10 @@ def fallback_segment_seats(
         arr_b = sb.arr if sb.arr is not None else sb.dep
         pieces.append(Piece(sa.station, sb.station, cls, n,
                             leg_depart + dep_a - board_dep,
-                            leg_depart + arr_b - board_dep))
-    return {}, tuple(pieces)
+                            leg_depart + arr_b - board_dep,
+                            availability_source="simulated_estimate",
+                            source="simulated_estimate"))
+    return LegSeatsResult({}, tuple(pieces), source="simulated_estimate")
 
 
 def materialize_leg_seats(
@@ -558,7 +605,7 @@ def materialize_leg_seats(
     preferred_classes: Optional[Tuple[str, ...]] = None,
     allow_live: bool = True,
     db_path: Path = DB_PATH,
-) -> Optional[Tuple[Dict[str, int], Tuple]]:
+) -> Optional[LegSeatsResult]:
     """Determine seat availability for a candidate journey leg.
 
     If RAILWAY_API_KEY is configured and allow_live is True, queries RapidAPI (capped at 2
@@ -602,10 +649,14 @@ def materialize_leg_seats(
         if live_results:
             available_classes = {c: n for c, n in live_results.items() if n > 0}
             if available_classes:
-                return available_classes, ()
-            # If all classes checked were explicitly full/waitlisted
-            if len(live_results) == len(candidate_classes):
-                return None
+                return LegSeatsResult(available_classes, (), source="live_irctc")
+            # All checked classes were waitlisted/full (0 available seats).
+            # Do NOT fall back to segments.py to fabricate fake seats!
+            logger.info(
+                "RapidAPI irctc1: all checked classes %s for train %s (%s->%s on %s) are waitlisted/full (0 seats) - omitting train from available results",
+                list(live_results.keys()), train, from_station, to_station, run_day,
+            )
+            return None
 
     # Seamless fallback to segments.py
     return fallback_segment_seats(

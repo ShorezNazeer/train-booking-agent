@@ -765,6 +765,21 @@ body {
   font-family: var(--font-mono);
 }
 
+.pill-source-live {
+  background: rgba(16, 185, 129, 0.22);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.45);
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.pill-source-offline {
+  background: rgba(148, 163, 184, 0.14);
+  color: #94a3b8;
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  font-weight: 600;
+}
+
 /* Time & Route Row */
 .route-summary-row {
   display: grid;

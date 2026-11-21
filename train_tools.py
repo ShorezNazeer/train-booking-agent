@@ -133,6 +133,7 @@ def _describe_journey(tt: Timetable, journey, travel_date: date) -> dict:
     for leg in journey.legs:
         dep_day = travel_date + timedelta(days=leg.depart // 1440)
         arr_day = travel_date + timedelta(days=leg.arrive // 1440)
+        leg_source = getattr(leg, "availability_source", getattr(leg, "source", "simulated_estimate"))
         pieces = [{
             "from_code": p.from_station,
             "from_name": tt.station_name(p.from_station),
@@ -145,6 +146,8 @@ def _describe_journey(tt: Timetable, journey, travel_date: date) -> dict:
             "arrives": _clock(p.arrive),
             "fare_inr": getattr(p, "fare_inr", 0),
             "fare_breakdown": getattr(p, "fare_breakdown", None),
+            "availability_source": getattr(p, "availability_source", getattr(p, "source", leg_source)),
+            "source": getattr(p, "source", getattr(p, "availability_source", leg_source)),
         } for p in leg.split]
         legs.append({
             "train": leg.train,
@@ -162,7 +165,10 @@ def _describe_journey(tt: Timetable, journey, travel_date: date) -> dict:
             "class_plan": pieces,              # stretches, each in its own class
             "fare_inr": getattr(leg, "fare_inr", 0),
             "class_fares": getattr(leg, "class_fares", {}),
+            "availability_source": leg_source,
+            "source": leg_source,
         })
+    primary_source = legs[0]["availability_source"] if legs else "simulated_estimate"
     return {
         "transfers": journey.transfers,
         "duration_min": journey.duration,
@@ -172,6 +178,8 @@ def _describe_journey(tt: Timetable, journey, travel_date: date) -> dict:
         "layovers_min": journey.layovers(),
         "total_fare_inr": getattr(journey, "total_fare_inr", 0),
         "fare_breakdown": list(getattr(journey, "fare_breakdown", ())),
+        "availability_source": primary_source,
+        "source": primary_source,
         "legs": legs,
     }
 
@@ -245,8 +253,11 @@ def check_seats(train_number: str, travel_date: str, from_station: str = None,
         return stops[s].dep if stops[s].dep is not None else stops[s].arr
 
     stretches = {
-        c: [{"from_code": stops[a].station, "from_name": name(a),
-             "to_code": stops[b].station, "to_name": name(b), "seats": n}
+        c: [{
+            "from_code": stops[a].station, "from_name": name(a),
+            "to_code": stops[b].station, "to_name": name(b), "seats": n,
+            "availability_source": "simulated_estimate", "source": "simulated_estimate",
+        }
             for a, b, n in seg.available_runs(board.seq, alight.seq, fn, c)]
         for c in classes
     }
@@ -257,6 +268,7 @@ def check_seats(train_number: str, travel_date: str, from_station: str = None,
             "to_code": stops[b].station, "to_name": name(b),
             "travel_class": c, "seats": n,
             "date": (run_day + timedelta(days=board_time(a) // 1440)).isoformat(),
+            "availability_source": "simulated_estimate", "source": "simulated_estimate",
         } for a, b, c, n in plan]
 
     fares = {
@@ -268,6 +280,8 @@ def check_seats(train_number: str, travel_date: str, from_station: str = None,
         "from_code": board.station, "to_code": alight.station,
         "seats": whole, "stretches": stretches, "class_plan": class_plan,
         "fares": fares,
+        "availability_source": "simulated_estimate",
+        "source": "simulated_estimate",
     }
     if whole:
         return _ok(f"Train {train}, {where} on {d}: one class covers the whole trip.", **extra)

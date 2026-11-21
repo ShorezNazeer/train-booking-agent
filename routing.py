@@ -20,6 +20,8 @@ class Piece:
     arrive: int
     fare_inr: int = 0
     fare_breakdown: Optional[dict] = None
+    availability_source: str = "simulated_estimate"
+    source: str = "simulated_estimate"
 
 
 @dataclass(frozen=True)
@@ -34,6 +36,8 @@ class Leg:
     split: tuple = ()  # Pieces to book instead when no single class covers the leg
     fare_inr: int = 0
     class_fares: dict = field(default_factory=dict)
+    availability_source: str = "simulated_estimate"
+    source: str = "simulated_estimate"
 
     @property
     def duration(self) -> int:
@@ -78,7 +82,9 @@ def _leg_seats(tt: Timetable, train: str, run_day: date, board_seq: int,
                             leg_depart + dep_a - board_dep,
                             leg_depart + arr_b - board_dep,
                             fare_inr=p_fare["total_fare"],
-                            fare_breakdown=p_fare))
+                            fare_breakdown=p_fare,
+                            availability_source="simulated_estimate",
+                            source="simulated_estimate"))
     return {}, tuple(pieces)
 
 
@@ -128,6 +134,7 @@ def find_direct(tt: Timetable, from_codes, to_codes,
         if got is None:
             continue
         seats, split = got
+        leg_source = getattr(got, "source", "simulated_estimate")
         if classes:
             if seats:
                 seats = {c: n for c, n in seats.items() if c in classes}
@@ -142,6 +149,7 @@ def find_direct(tt: Timetable, from_codes, to_codes,
         split_with_fares = []
         for p in split:
             p_fare = fare_engine.calculate_stretch_fare(p.from_station, p.to_station, p.travel_class)
+            p_src = getattr(p, "source", getattr(p, "availability_source", leg_source))
             split_with_fares.append(Piece(
                 from_station=p.from_station,
                 to_station=p.to_station,
@@ -151,6 +159,8 @@ def find_direct(tt: Timetable, from_codes, to_codes,
                 arrive=p.arrive,
                 fare_inr=p_fare["total_fare"],
                 fare_breakdown=p_fare,
+                availability_source=p_src,
+                source=p_src,
             ))
         split_tuple = tuple(split_with_fares)
 
@@ -183,6 +193,8 @@ def find_direct(tt: Timetable, from_codes, to_codes,
             depart=depart, arrive=depart + r["duration_min"],
             seats=seats, split=split_tuple,
             fare_inr=leg_fare, class_fares=class_fares,
+            availability_source=leg_source,
+            source=leg_source,
         ))
     return sorted(legs, key=lambda leg: leg.depart)
 
@@ -272,6 +284,7 @@ def _materialize(
     if got is None:
         return None
     seats, split = got
+    leg_source = getattr(got, "source", "simulated_estimate")
     if classes:
         if seats:
             seats = {c: n for c, n in seats.items() if c in classes}
@@ -285,6 +298,7 @@ def _materialize(
     split_with_fares = []
     for p in split:
         p_fare = fare_engine.calculate_stretch_fare(p.from_station, p.to_station, p.travel_class)
+        p_src = getattr(p, "source", getattr(p, "availability_source", leg_source))
         split_with_fares.append(Piece(
             from_station=p.from_station,
             to_station=p.to_station,
@@ -294,6 +308,8 @@ def _materialize(
             arrive=p.arrive,
             fare_inr=p_fare["total_fare"],
             fare_breakdown=p_fare,
+            availability_source=p_src,
+            source=p_src,
         ))
     split_tuple = tuple(split_with_fares)
 
@@ -323,7 +339,8 @@ def _materialize(
     return Leg(train=raw.train, name=tt.train_name(raw.train),
                from_station=raw.from_station, to_station=raw.to_station,
                depart=raw.depart, arrive=raw.arrive, seats=seats, split=split_tuple,
-               fare_inr=leg_fare, class_fares=class_fares)
+               fare_inr=leg_fare, class_fares=class_fares,
+               availability_source=leg_source, source=leg_source)
 
 
 def find_routes(tt: Timetable, from_codes, to_codes, travel_date: date,
