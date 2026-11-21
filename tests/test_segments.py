@@ -34,9 +34,11 @@ def force(train, cls, segments):
 
 def force_split_shape(train="T"):
     """SL only A->C, 3A only C->E, 2A nowhere: only a class change works."""
+    for c in av.CLASSES:
+        if c not in ("SL", "3A"):
+            force(train, c, [0, 1, 2, 3])
     force(train, "SL", [2, 3])
     force(train, "3A", [0, 1])
-    force(train, "2A", [0, 1, 2, 3])
 
 
 # ---------- the segment model ----------

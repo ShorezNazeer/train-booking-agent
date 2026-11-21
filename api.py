@@ -294,59 +294,25 @@ def cancel_ticket_delete(pnr: str, request: Request):
 @app.get("/api/demo/direct")
 @app.post("/api/demo/direct")
 def demo_direct():
-    av.FORCED_SOLD_OUT.clear()
-    seg.FORCED_SEGMENT_SOLD_OUT.clear()
-    tomorrow = (date.today() + timedelta(days=1)).isoformat()
-    return {
-        "success": True,
-        "type": "direct",
-        "from_station": "Delhi",
-        "to_station": "Kanpur",
-        "travel_date": tomorrow,
-        "description": "Standard direct trains with available single-class seats (SL, 3A, 2A).",
-    }
+    return tools.setup_demo_direct()
 
 
 @app.get("/api/demo/split")
 @app.post("/api/demo/split")
 def demo_split():
-    av.FORCED_SOLD_OUT.clear()
-    seg.FORCED_SEGMENT_SOLD_OUT.clear()
-    train_agent.force_split_demo("Lucknow", "Delhi")
-    tomorrow = (date.today() + timedelta(days=1)).isoformat()
-    return {
-        "success": True,
-        "type": "split",
-        "from_station": "Lucknow",
-        "to_station": "Delhi",
-        "travel_date": tomorrow,
-        "description": "Forces SL sold out on 2nd half and 3A on 1st half. Mid-route class/coach change is required.",
-    }
+    return tools.setup_demo_split()
 
 
 @app.get("/api/demo/soldout")
 @app.post("/api/demo/soldout")
 def demo_soldout():
-    av.FORCED_SOLD_OUT.clear()
-    seg.FORCED_SEGMENT_SOLD_OUT.clear()
-    train_agent.force_sold_out("Lucknow", "Delhi")
-    tomorrow = (date.today() + timedelta(days=1)).isoformat()
-    return {
-        "success": True,
-        "type": "soldout",
-        "from_station": "Lucknow",
-        "to_station": "Delhi",
-        "travel_date": tomorrow,
-        "description": "Forces all direct trains sold out. Reroutes through multi-train transfers with layovers.",
-    }
+    return tools.setup_demo_soldout()
 
 
 @app.get("/api/demo/reset")
 @app.post("/api/demo/reset")
 def demo_reset():
-    av.FORCED_SOLD_OUT.clear()
-    seg.FORCED_SEGMENT_SOLD_OUT.clear()
-    return {"success": True, "description": "All demo simulation overrides cleared."}
+    return tools.reset_demo()
 
 
 # ---------- Chat Assistant Endpoint ----------

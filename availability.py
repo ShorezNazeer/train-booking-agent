@@ -2,8 +2,17 @@
 import hashlib
 from datetime import date
 
-CLASSES = ("SL", "3A", "2A")
-CAPACITY = {"SL": 72, "3A": 64, "2A": 48}
+CLASSES = ("1A", "2A", "3A", "3E", "CC", "EC", "SL", "2S")
+CAPACITY = {
+    "1A": 24,
+    "2A": 48,
+    "3A": 64,
+    "3E": 72,
+    "CC": 75,
+    "EC": 56,
+    "SL": 72,
+    "2S": 108,
+}
 SOLD_OUT_CHANCE = 0.25  # chance that a train/date/class has no seats
 
 # For tests and demos: force trains sold out.

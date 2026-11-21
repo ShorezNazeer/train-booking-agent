@@ -10,16 +10,109 @@ Ensures:
 4. Station codes and names (including renamed ones like PRYJ, DDU) are populated.
 """
 import json
+import re
 import sqlite3
 import sys
 from collections import defaultdict
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 RAW_DIR = BASE_DIR / "raw_data"
 DB_PATH = BASE_DIR / "data" / "trains.db"
 NTES_SCHEDULES_FILE = RAW_DIR / "ntes_schedules.json"
+
+WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+VALID_CLASSES = ["1A", "2A", "3A", "3E", "CC", "EC", "SL", "2S"]
+
+
+def extract_running_days(sched: dict) -> str:
+    """Fold NTES's run-date list / DaysOfRun into Mon..Sun format, or 'Daily'."""
+    dates = sched.get("vStartDateList") or []
+    seen = set()
+    for d in dates:
+        try:
+            seen.add(datetime.strptime(d, "%d-%b-%Y").weekday())
+        except ValueError:
+            pass
+    if len(seen) == 7:
+        return "Daily"
+    if seen:
+        return ",".join(WEEKDAYS[i] for i in range(7) if i in seen)
+
+    dor = (sched.get("DaysOfRun") or "").strip()
+    if not dor or "daily" in dor.lower():
+        return "Daily"
+    parts = [p.strip().title()[:3] for p in dor.split(",") if p.strip()]
+    matched = [w for w in WEEKDAYS if w in parts]
+    if len(matched) == 7 or not matched:
+        return "Daily"
+    return ",".join(matched)
+
+
+def infer_classes(train_name: str, train_type: str = "") -> list[str]:
+    """Universal pattern-based classifier for every train in India (no hardcoded train numbers):
+    - RAJDHANI -> ['1A', '2A', '3A']
+    - VANDE BHARAT, TEJAS, GATIMAAN, DOUBLE DECKER, and SHATABDI (excluding JAN SHATABDI) -> ['CC', 'EC']
+    - JAN SHATABDI -> ['2S', 'CC']
+    - GARIB RATH -> ['3A']
+    - HUMSAFAR (except CHAMPARAN) -> ['3A']
+    - Any train containing ' AC ' or starting/ending with 'AC EXP' / 'AC SF' (e.g., ARUNACHAL AC SF) -> ['1A', '2A', '3A']
+    - AMRIT BHARAT, JANSADHARAN, ANTYODAYA -> ['SL', '2S']
+    - MEMU, DEMU, EMU, PASSENGER, LOCAL -> ['2S']
+    - Standard Mail/Express/Superfast -> ['2A', '3A', '3E', 'SL', '2S']
+    """
+    name = (train_name or "").upper().strip()
+    ttype = (train_type or "").upper().strip()
+    tokens = set(re.split(r"[^A-Z0-9]+", name))
+
+    # 1. RAJDHANI -> ['1A', '2A', '3A']
+    if "RAJDHANI" in tokens or "RAJDHANI" in name or ttype == "RAJ":
+        return ["1A", "2A", "3A"]
+
+    # 2. JAN SHATABDI -> ['2S', 'CC'] (must precede SHATABDI)
+    if "JAN SHATABDI" in name or "JANSHATABDI" in name or ttype == "JSH":
+        return ["2S", "CC"]
+
+    # 3. VANDE BHARAT, TEJAS, GATIMAAN, DOUBLE DECKER, and SHATABDI (excluding JAN SHATABDI) -> ['CC', 'EC']
+    if any(k in name for k in ["VANDE BHARAT", "TEJAS", "GATIMAAN", "DOUBLE DECKER", "DOUBLE DKR", "SHATABDI"]) or ttype in (
+        "SHT", "VNDB", "VNDM", "VNDS", "TEJ", "GT"
+    ):
+        return ["CC", "EC"]
+
+    # 4. GARIB RATH -> ['3A']
+    if "GARIB RATH" in name or "GARIBRATH" in name or ttype == "GBR":
+        return ["3A"]
+
+    # 5. HUMSAFAR (except CHAMPARAN) -> ['3A']
+    if ("HUMSAFAR" in name or "HMSFR" in name or ttype == "HUM") and "CHAMPARAN" not in name:
+        return ["3A"]
+
+    # 6. Any train containing ' AC ' or starting/ending with 'AC EXP' / 'AC SF' (e.g., ARUNACHAL AC SF) -> ['1A', '2A', '3A']
+    if (
+        (" AC " in f" {name} ")
+        or name.startswith(("AC EXP", "AC SF", "AC EXPRESS"))
+        or name.endswith(("AC EXP", "AC SF", "AC EXPRESS", "AC SPL", "AC SPECIAL"))
+        or bool(re.search(r"\bAC\s+(EXP|EXPRESS|SF|SUPERFAST|SPL|SPECIAL)\b", name))
+        or bool(re.search(r"\b(EXP|EXPRESS|SF|SUPERFAST|SPL|SPECIAL)\s+AC\b", name))
+    ):
+        return ["1A", "2A", "3A"]
+
+    # 7. AMRIT BHARAT, JANSADHARAN, ANTYODAYA -> ['SL', '2S']
+    if any(k in name for k in ["AMRIT BHARAT", "JANSADHARAN", "ANTYODAYA"]) or ttype in ("AMTB", "ANT"):
+        return ["SL", "2S"]
+
+    # 8. MEMU, DEMU, EMU, PASSENGER, LOCAL -> ['2S']
+    if (
+        any(k in tokens for k in ["MEMU", "DEMU", "EMU", "PASSENGER", "LOCAL", "DMU", "SUBURBAN"])
+        or any(k in name for k in ["PASSENGER", "MEMU", "DEMU", "EMU", "LOCAL"])
+        or ttype in ("MEMU", "DEMU", "DMU", "EMU", "PAS", "SUB")
+    ):
+        return ["2S"]
+
+    # 9. Standard Mail/Express/Superfast -> ['2A', '3A', '3E', 'SL', '2S']
+    return ["2A", "3A", "3E", "SL", "2S"]
+
 
 
 def parse_time_str(t_str):
@@ -96,7 +189,9 @@ def process_all_schedules():
         ttype = (s.get("TrainType") or "").strip()
         src = (s.get("Source") or "").strip()
         dst = (s.get("Destination") or "").strip()
-        trains_meta[num] = (num, name, ttype, src, dst)
+        runs_days = extract_running_days(s)
+        classes = infer_classes(name, ttype)
+        trains_meta[num] = (num, name, ttype, src, dst, runs_days, ",".join(classes))
 
         for st in s.get("stations", []):
             code = (st.get("StationCode") or "").strip()
@@ -110,6 +205,22 @@ def process_all_schedules():
                 "arrival": st.get("STA"),
                 "departure": st.get("STD"),
             })
+
+    # Load legacy train metadata from trains.json
+    legacy_meta = {}
+    trains_json_file = RAW_DIR / "trains.json"
+    if trains_json_file.exists():
+        with open(trains_json_file, encoding="utf-8") as f:
+            for feat in json.load(f).get("features", []):
+                p = feat.get("properties", {})
+                num = str(p.get("number") or "").strip()
+                if num:
+                    legacy_meta[num] = (
+                        p.get("name") or "",
+                        p.get("type") or "",
+                        p.get("from_station_code") or "",
+                        p.get("to_station_code") or "",
+                    )
 
     # 2. Ingest legacy raw_data/schedules.json for trains not in NTES
     legacy_file = RAW_DIR / "schedules.json"
@@ -251,10 +362,22 @@ def process_all_schedules():
         if train_num in trains_meta:
             final_trains.append(trains_meta[train_num])
         else:
-            # Fallback metadata from first and last stop
             first_code = train_stops[0][2]
             last_code = train_stops[-1][2]
-            final_trains.append((train_num, f"Train {train_num}", "EXP", first_code, last_code))
+            if train_num in legacy_meta:
+                l_name, l_type, l_src, l_dst = legacy_meta[train_num]
+                name = l_name or f"Train {train_num}"
+                ttype = l_type or "EXP"
+                src = l_src or first_code
+                dst = l_dst or last_code
+            else:
+                name = f"Train {train_num}"
+                ttype = "EXP"
+                src = first_code
+                dst = last_code
+            runs_days = "Daily"
+            classes = infer_classes(name, ttype)
+            final_trains.append((train_num, name, ttype, src, dst, runs_days, ",".join(classes)))
 
     return all_stops, final_trains, extra_stations
 
@@ -292,7 +415,9 @@ def import_data():
             name TEXT,
             type TEXT,
             from_code TEXT,
-            to_code TEXT
+            to_code TEXT,
+            runs_days TEXT DEFAULT 'Daily',
+            classes TEXT DEFAULT '2A,3A,3E,SL,2S'
         )
     """)
     cur.execute("""
@@ -307,7 +432,7 @@ def import_data():
     """)
 
     cur.executemany("INSERT INTO stations VALUES (?,?,?,?)", stations)
-    cur.executemany("INSERT INTO trains VALUES (?,?,?,?,?)", trains)
+    cur.executemany("INSERT INTO trains VALUES (?,?,?,?,?,?,?)", trains)
     cur.executemany("INSERT INTO stops VALUES (?,?,?,?,?,?)", stops)
 
     cur.execute("CREATE INDEX idx_stops_station ON stops(station_code)")

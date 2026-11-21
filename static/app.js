@@ -308,6 +308,11 @@ async function triggerDemo(type) {
       state.travelDate = data.travel_date;
       state.activeDemo = type;
 
+      // Reset filter chips to All Classes so scenario is not blocked by a leftover filter
+      document.querySelectorAll(".chip").forEach((c) => c.classList.remove("active"));
+      document.querySelector('.chip[data-classes=""]')?.classList.add("active");
+      state.preferredClasses = "";
+
       // Update active demo card style
       document.querySelectorAll(".demo-btn-card").forEach((card) => card.classList.remove("active"));
       if (type === "direct") document.getElementById("demoDirectBtn")?.classList.add("active");
@@ -327,6 +332,9 @@ async function resetDemos() {
     const res = await fetch("/api/demo/reset", { method: "POST" });
     await parseJsonResponse(res);
     document.querySelectorAll(".demo-btn-card").forEach((card) => card.classList.remove("active"));
+    document.querySelectorAll(".chip").forEach((c) => c.classList.remove("active"));
+    document.querySelector('.chip[data-classes=""]')?.classList.add("active");
+    state.preferredClasses = "";
     state.activeDemo = null;
     showToast("info", "Demo simulation overrides cleared.");
     await executeSearch();

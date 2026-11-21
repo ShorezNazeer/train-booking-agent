@@ -4,6 +4,7 @@ Rajdhani, Shatabdi, and all NDLS-CNB trains, saving to raw_data/ntes_schedules.j
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 
 from ntes import NTESClient
@@ -11,6 +12,45 @@ from ntes import NTESClient
 ROOT = Path(__file__).resolve().parent.parent
 RAW_DIR = ROOT / "raw_data"
 OUT_FILE = RAW_DIR / "ntes_schedules.json"
+
+WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+VALID_CLASSES = ["1A", "2A", "3A", "3E", "CC", "EC", "SL", "2S"]
+
+
+def extract_running_days(sched: dict) -> str:
+    """Fold NTES's run-date list / DaysOfRun into Mon..Sun format, or 'Daily'."""
+    dates = sched.get("vStartDateList") or []
+    seen = set()
+    for d in dates:
+        try:
+            seen.add(datetime.strptime(d, "%d-%b-%Y").weekday())
+        except ValueError:
+            pass
+    if len(seen) == 7:
+        return "Daily"
+    if seen:
+        return ",".join(WEEKDAYS[i] for i in range(7) if i in seen)
+
+    dor = (sched.get("DaysOfRun") or "").strip()
+    if not dor or "daily" in dor.lower():
+        return "Daily"
+    parts = [p.strip().title()[:3] for p in dor.split(",") if p.strip()]
+    matched = [w for w in WEEKDAYS if w in parts]
+    if len(matched) == 7 or not matched:
+        return "Daily"
+    return ",".join(matched)
+
+
+def extract_classes(sched: dict) -> list[str]:
+    """Extract valid coach composition / booking classes from NTES schedule."""
+    raw = (sched.get("prsClassOfTravel") or "") + "," + (sched.get("ClassOfTravel") or "")
+    classes = []
+    for c in raw.split(","):
+        c = c.strip().upper()
+        if c in VALID_CLASSES and c not in classes:
+            classes.append(c)
+    return classes
+
 
 CORRIDOR_PAIRS = [
     # Delhi - Kanpur corridor

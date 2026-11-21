@@ -371,3 +371,197 @@ def cancel_ticket(pnr: str, confirm=None, session_id: str = None) -> dict:
 def list_bookings(session_id: str = None) -> dict:
     active = [b for b in _load_bookings(session_id=session_id) if b["status"] == "confirmed"]
     return _ok(f"{len(active)} active booking(s).", bookings=active)
+
+
+# ---------- Interactive Demonstration Preset Handlers ----------
+_ntes_numbers = None
+
+
+def _ntes_train_numbers() -> set:
+    global _ntes_numbers
+    if _ntes_numbers is None:
+        ntes_file = Path(__file__).resolve().parent / "raw_data" / "ntes_schedules.json"
+        if ntes_file.exists():
+            try:
+                with open(ntes_file, encoding="utf-8") as f:
+                    _ntes_numbers = {str(t.get("TrainNumber") or "").strip() for t in json.load(f)}
+            except Exception:
+                _ntes_numbers = set()
+        else:
+            _ntes_numbers = set()
+    return _ntes_numbers
+
+
+def setup_demo_direct() -> dict:
+    """Dynamically pick a real 2026 NTES train with available seats."""
+    av.FORCED_SOLD_OUT.clear()
+    seg.FORCED_SEGMENT_SOLD_OUT.clear()
+    seg.FORCED_SEGMENT_AVAILABLE.clear()
+    tomorrow = date.today() + timedelta(days=1)
+    tt = _timetable()
+    ntes_nums = _ntes_train_numbers()
+
+    direct_rides = tt.direct_trains(["NDLS", "DLI", "ANVT", "NZM"], ["CNB"])
+    chosen_train = None
+    chosen_name = None
+    chosen_from = "Delhi"
+    chosen_to = "Kanpur"
+
+    for r in direct_rides:
+        if r["train"] in ntes_nums and tt.train_runs_on(r["train"], tomorrow):
+            t_classes = tt.train_classes(r["train"])
+            if t_classes:
+                chosen_train = r["train"]
+                chosen_name = r["name"]
+                chosen_from = tt.station_name(r["from"])
+                chosen_to = tt.station_name(r["to"])
+                break
+
+    if not chosen_train:
+        for r in direct_rides:
+            if tt.train_runs_on(r["train"], tomorrow):
+                chosen_train = r["train"]
+                chosen_name = r["name"]
+                break
+
+    return {
+        "success": True,
+        "type": "direct",
+        "from_station": "Delhi",
+        "to_station": "Kanpur",
+        "travel_date": tomorrow.isoformat(),
+        "train_number": chosen_train,
+        "train_name": chosen_name,
+        "description": f"Direct 2026 NTES train {chosen_train} ({chosen_name}) from {chosen_from} to {chosen_to} with available single-class seats.",
+    }
+
+
+def setup_demo_split() -> dict:
+    """Dynamically pick a real 2026 NTES train and intermediate stop, configuring a mid-route class change using valid classes from that train's classes list."""
+    av.FORCED_SOLD_OUT.clear()
+    seg.FORCED_SEGMENT_SOLD_OUT.clear()
+    seg.FORCED_SEGMENT_AVAILABLE.clear()
+    tomorrow = date.today() + timedelta(days=1)
+    tt = _timetable()
+    ntes_nums = _ntes_train_numbers()
+
+    from_name = "Lucknow"
+    to_name = "Delhi"
+    src_codes = tt.resolve_station(from_name)
+    dst_codes = tt.resolve_station(to_name)
+
+    all_direct = tt.direct_trains(src_codes, dst_codes)
+    ntes_rides = [
+        r for r in all_direct
+        if (not ntes_nums or r["train"] in ntes_nums)
+        and tt.train_runs_on(r["train"], tomorrow)
+        and len(tt.train_classes(r["train"])) >= 2
+        and r["to_seq"] - r["from_seq"] >= 2
+    ]
+
+    # Prefer trains with compact realistic stop lists (e.g. between 3 and 25 stops)
+    ntes_rides.sort(key=lambda r: len(tt.stops_of(r["train"])))
+
+    chosen_ride = None
+    c1, c2 = None, None
+    mid_station_code = None
+    mid_station_name = None
+
+    for r in ntes_rides:
+        stops = tt.stops_of(r["train"])
+        from_seq = r["from_seq"]
+        to_seq = r["to_seq"]
+        mid_idx = (from_seq + to_seq) // 2
+        mid_stop = stops[mid_idx]
+        t_classes = tt.train_classes(r["train"])
+
+        if "SL" in t_classes and "3A" in t_classes:
+            c1, c2 = "SL", "3A"
+        elif "CC" in t_classes and "EC" in t_classes:
+            c1, c2 = "CC", "EC"
+        elif "3A" in t_classes and "2A" in t_classes:
+            c1, c2 = "3A", "2A"
+        else:
+            c1, c2 = t_classes[-1], t_classes[0]
+
+        chosen_ride = r
+        mid_station_code = mid_stop.station
+        mid_station_name = tt.station_name(mid_station_code)
+        break
+
+    chosen = chosen_ride["train"] if chosen_ride else "12229"
+    if chosen_ride:
+        from_seq = chosen_ride["from_seq"]
+        to_seq = chosen_ride["to_seq"]
+        mid_idx = (from_seq + to_seq) // 2
+        t_classes = tt.train_classes(chosen)
+
+        # Stretch 1 (board to mid): c1 guaranteed available, other classes sold out
+        for s in range(from_seq, mid_idx):
+            seg.FORCED_SEGMENT_AVAILABLE[(chosen, c1, s)] = 15
+            for cls in t_classes:
+                if cls != c1:
+                    seg.FORCED_SEGMENT_SOLD_OUT.add((chosen, cls, s))
+
+        # Stretch 2 (mid to alight): c2 guaranteed available, other classes sold out
+        for s in range(mid_idx, to_seq):
+            seg.FORCED_SEGMENT_AVAILABLE[(chosen, c2, s)] = 15
+            for cls in t_classes:
+                if cls != c2:
+                    seg.FORCED_SEGMENT_SOLD_OUT.add((chosen, cls, s))
+
+        # Sell out all other direct trains between Lucknow and Delhi
+        for r in all_direct:
+            if r["train"] != chosen:
+                av.FORCED_SOLD_OUT.add((r["train"], None))
+
+    return {
+        "success": True,
+        "type": "split",
+        "from_station": from_name,
+        "to_station": to_name,
+        "travel_date": tomorrow.isoformat(),
+        "train_number": chosen,
+        "train_name": tt.train_name(chosen) if chosen else None,
+        "transfer_station": mid_station_name,
+        "transfer_station_code": mid_station_code,
+        "class_first_half": c1,
+        "class_second_half": c2,
+        "description": f"Real 2026 NTES train {chosen} ({tt.train_name(chosen)}): {c1} to {mid_station_name} ({mid_station_code}), then switch coach to {c2} to {to_name}.",
+    }
+
+
+def setup_demo_soldout() -> dict:
+    """Dynamically configure multi-train transfer scenario: forces direct trains sold out and verifies connecting transfer routes."""
+    av.FORCED_SOLD_OUT.clear()
+    seg.FORCED_SEGMENT_SOLD_OUT.clear()
+    seg.FORCED_SEGMENT_AVAILABLE.clear()
+    tomorrow = date.today() + timedelta(days=1)
+    tt = _timetable()
+
+    from_name = "Lucknow"
+    to_name = "Delhi"
+    src_codes = tt.resolve_station(from_name)
+    dst_codes = tt.resolve_station(to_name)
+
+    # Force all direct trains between Lucknow and Delhi sold out
+    all_direct = tt.direct_trains(src_codes, dst_codes)
+    for d in all_direct:
+        av.FORCED_SOLD_OUT.add((d["train"], None))
+
+    return {
+        "success": True,
+        "type": "soldout",
+        "from_station": from_name,
+        "to_station": to_name,
+        "travel_date": tomorrow.isoformat(),
+        "description": "All direct trains forced sold out. System reroutes passengers via connecting trains with layovers (e.g. via Kanpur).",
+    }
+
+
+def reset_demo() -> dict:
+    av.FORCED_SOLD_OUT.clear()
+    seg.FORCED_SEGMENT_SOLD_OUT.clear()
+    seg.FORCED_SEGMENT_AVAILABLE.clear()
+    return {"success": True, "description": "All demo simulation overrides cleared."}
+

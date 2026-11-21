@@ -92,6 +92,20 @@ def find_direct(tt: Timetable, from_codes, to_codes,
     legs = []
     classes = tuple(preferred_classes) if preferred_classes else None
     for r in tt.direct_trains(from_codes, to_codes):
+        # 1. Enforce running days matched against requested travel_date
+        if not tt.train_runs_on(r["train"], travel_date):
+            continue
+
+        # 2. Enforce classes: if preferred_classes requested, train must support at least one
+        t_classes = tt.train_classes(r["train"])
+        if classes:
+            matching = tuple(c for c in t_classes if c in classes)
+            if not matching:
+                continue
+            effective_classes = matching
+        else:
+            effective_classes = tuple(t_classes)
+
         depart = r["depart"] % 1440          # time of day you board
         if depart < earliest:
             continue
@@ -106,7 +120,7 @@ def find_direct(tt: Timetable, from_codes, to_codes,
             alight_seq=r["to_seq"],
             leg_depart=depart,
             board_dep=r["depart"],
-            preferred_classes=classes,
+            preferred_classes=effective_classes,
         )
         if got is None:
             continue
@@ -223,7 +237,13 @@ class _Label:
 
 
 def _materialize(tt: Timetable, raw: _RawLeg, preferred_classes: Optional[Tuple[str, ...]] = None) -> Leg:
-    classes = tuple(preferred_classes) if preferred_classes else None
+    t_classes = tt.train_classes(raw.train)
+    if preferred_classes:
+        matching = tuple(c for c in t_classes if c in preferred_classes)
+        classes = matching or tuple(preferred_classes)
+    else:
+        classes = tuple(t_classes)
+
     got = live_seats.materialize_leg_seats(
         tt,
         train=raw.train,
@@ -324,6 +344,22 @@ def find_routes(tt: Timetable, from_codes, to_codes, travel_date: date,
                         continue
                 elif depart - label.arrive > max_layover:
                     continue
+
+                # Enforce running days for this train's boarding date
+                leg_board_date = travel_date + timedelta(days=depart // 1440)
+                if not tt.train_runs_on(board.train, leg_board_date):
+                    continue
+
+                # Enforce classes
+                t_classes = tt.train_classes(board.train)
+                if classes:
+                    matching = tuple(c for c in t_classes if c in classes)
+                    if not matching:
+                        continue
+                    effective_classes = matching
+                else:
+                    effective_classes = tuple(t_classes)
+
                 stops = tt.stops_of(board.train)
                 run_day = None
                 dead = 0
@@ -338,9 +374,11 @@ def find_routes(tt: Timetable, from_codes, to_codes, travel_date: date,
                             # first hop that no class can carry: can't ride past it
                             run_day = seg.run_date(
                                 travel_date + timedelta(days=depart // 1440), board.dep)
+                            if not tt.train_runs_on(board.train, run_day):
+                                break
                             dead = seg.first_dead_segment(
                                 board.train, run_day, board.seq, len(stops) - 1,
-                                board.train in forced, classes=classes)
+                                board.train in forced, classes=effective_classes)
                         if alight.seq - 1 >= dead:
                             break
                         best[alight.station] = arrive
