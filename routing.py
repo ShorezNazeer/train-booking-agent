@@ -8,6 +8,8 @@ import live_seats
 import segments as seg
 from data_source import Timetable
 
+MAX_LIVE_CALLS_PER_SEARCH = 1
+
 
 @dataclass(frozen=True)
 class Piece:
@@ -22,6 +24,7 @@ class Piece:
     fare_breakdown: Optional[dict] = None
     availability_source: str = "simulated_estimate"
     source: str = "simulated_estimate"
+    fetched_at: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -38,6 +41,7 @@ class Leg:
     class_fares: dict = field(default_factory=dict)
     availability_source: str = "simulated_estimate"
     source: str = "simulated_estimate"
+    fetched_at: Optional[str] = None
 
     @property
     def duration(self) -> int:
@@ -90,7 +94,8 @@ def _leg_seats(tt: Timetable, train: str, run_day: date, board_seq: int,
 
 def find_direct(tt: Timetable, from_codes, to_codes,
                 travel_date: date, earliest: int = 0,
-                preferred_classes: Optional[Tuple[str, ...]] = None) -> list:
+                preferred_classes: Optional[Tuple[str, ...]] = None,
+                allow_live: bool = True) -> list:
     """Direct trains you can ride on travel_date, leaving at or after `earliest`
     (minutes since midnight). A train counts if one class has seats for the whole
     ride, or if the ride can be covered by changing class along the way.
@@ -117,7 +122,7 @@ def find_direct(tt: Timetable, from_codes, to_codes,
         if depart < earliest:
             continue
         run_day = seg.run_date(travel_date, r["depart"])
-        is_top = (len(legs) == 0)
+        is_top = (len(legs) == 0) and allow_live
         got = live_seats.materialize_leg_seats(
             tt,
             train=r["train"],
@@ -135,6 +140,7 @@ def find_direct(tt: Timetable, from_codes, to_codes,
             continue
         seats, split = got
         leg_source = getattr(got, "source", "simulated_estimate")
+        leg_fetched_at = getattr(got, "fetched_at", None)
         if classes:
             if seats:
                 seats = {c: n for c, n in seats.items() if c in classes}
@@ -150,6 +156,7 @@ def find_direct(tt: Timetable, from_codes, to_codes,
         for p in split:
             p_fare = fare_engine.calculate_stretch_fare(p.from_station, p.to_station, p.travel_class)
             p_src = getattr(p, "source", getattr(p, "availability_source", leg_source))
+            p_fetched_at = getattr(p, "fetched_at", leg_fetched_at)
             split_with_fares.append(Piece(
                 from_station=p.from_station,
                 to_station=p.to_station,
@@ -161,6 +168,7 @@ def find_direct(tt: Timetable, from_codes, to_codes,
                 fare_breakdown=p_fare,
                 availability_source=p_src,
                 source=p_src,
+                fetched_at=p_fetched_at,
             ))
         split_tuple = tuple(split_with_fares)
 
@@ -195,7 +203,9 @@ def find_direct(tt: Timetable, from_codes, to_codes,
             fare_inr=leg_fare, class_fares=class_fares,
             availability_source=leg_source,
             source=leg_source,
+            fetched_at=leg_fetched_at,
         ))
+    return sorted(legs, key=lambda leg: leg.depart)
     return sorted(legs, key=lambda leg: leg.depart)
 
 
@@ -211,6 +221,7 @@ class Journey:
     legs: tuple
     total_fare_inr: int = 0
     fare_breakdown: tuple = ()
+    fetched_at: Optional[str] = None
 
     @property
     def depart(self) -> int:
@@ -285,6 +296,7 @@ def _materialize(
         return None
     seats, split = got
     leg_source = getattr(got, "source", "simulated_estimate")
+    leg_fetched_at = getattr(got, "fetched_at", None)
     if classes:
         if seats:
             seats = {c: n for c, n in seats.items() if c in classes}
@@ -299,6 +311,7 @@ def _materialize(
     for p in split:
         p_fare = fare_engine.calculate_stretch_fare(p.from_station, p.to_station, p.travel_class)
         p_src = getattr(p, "source", getattr(p, "availability_source", leg_source))
+        p_fetched_at = getattr(p, "fetched_at", leg_fetched_at)
         split_with_fares.append(Piece(
             from_station=p.from_station,
             to_station=p.to_station,
@@ -310,6 +323,7 @@ def _materialize(
             fare_breakdown=p_fare,
             availability_source=p_src,
             source=p_src,
+            fetched_at=p_fetched_at,
         ))
     split_tuple = tuple(split_with_fares)
 
@@ -340,14 +354,16 @@ def _materialize(
                from_station=raw.from_station, to_station=raw.to_station,
                depart=raw.depart, arrive=raw.arrive, seats=seats, split=split_tuple,
                fare_inr=leg_fare, class_fares=class_fares,
-               availability_source=leg_source, source=leg_source)
+               availability_source=leg_source, source=leg_source,
+               fetched_at=leg_fetched_at)
 
 
 def find_routes(tt: Timetable, from_codes, to_codes, travel_date: date,
                 earliest: int = 0, max_trains: int = 3,
                 min_layover: int = MIN_LAYOVER, max_layover: int = MAX_LAYOVER,
                 horizon: int = HORIZON,
-                preferred_classes: Optional[Tuple[str, ...]] = None) -> list:
+                preferred_classes: Optional[Tuple[str, ...]] = None,
+                allow_live: bool = True) -> list:
     """Best journey for each number of trains (1..max_trains), earliest
     arrival first among equals. All times are minutes since midnight of
     travel_date. The first train must leave on travel_date. A leg may need a
@@ -426,7 +442,7 @@ def find_routes(tt: Timetable, from_codes, to_codes, travel_date: date,
         if reached:
             lab = min(reached, key=lambda x: x.arrive)
             legs = []
-            is_top = (len(journeys) == 0)
+            is_top = (len(journeys) == 0) and allow_live
             valid = True
             while lab.leg is not None:
                 leg = _materialize(
@@ -443,7 +459,8 @@ def find_routes(tt: Timetable, from_codes, to_codes, travel_date: date,
             if valid and legs:
                 legs_tuple = tuple(reversed(legs))
                 tot_fare, bdown = fare_engine.calculate_journey_fare(legs_tuple, preferred_classes=classes)
-                journeys.append(Journey(legs_tuple, total_fare_inr=tot_fare, fare_breakdown=bdown))
+                j_fetched_at = legs_tuple[0].fetched_at if legs_tuple else None
+                journeys.append(Journey(legs_tuple, total_fare_inr=tot_fare, fare_breakdown=bdown, fetched_at=j_fetched_at))
         for c in to_set:
             new.pop(c, None)        # no need to continue past the destination
         if not new:
@@ -453,7 +470,8 @@ def find_routes(tt: Timetable, from_codes, to_codes, travel_date: date,
 
 
 def plan_trip(tt: Timetable, from_text: str, to_text: str, travel_date: date,
-              earliest: int = 0, preferred_classes: Optional[Tuple[str, ...]] = None, **kwargs) -> list:
+              earliest: int = 0, preferred_classes: Optional[Tuple[str, ...]] = None,
+              allow_live: bool = True, **kwargs) -> list:
     """Direct trains if any can be ridden; otherwise the best multi-leg routes."""
     live_seats.reset_search_quota()
     src = tt.resolve_station(from_text)
@@ -463,12 +481,12 @@ def plan_trip(tt: Timetable, from_text: str, to_text: str, travel_date: date,
     if not dst:
         raise ValueError(f"I don't know a station called '{to_text}'.")
     classes = tuple(preferred_classes) if preferred_classes else None
-    direct = find_direct(tt, src, dst, travel_date, earliest, preferred_classes=classes)
+    direct = find_direct(tt, src, dst, travel_date, earliest, preferred_classes=classes, allow_live=allow_live)
     if direct:
         journeys = []
         for leg in direct:
             tot_fare, bdown = fare_engine.calculate_journey_fare((leg,), preferred_classes=classes)
-            journeys.append(Journey((leg,), total_fare_inr=tot_fare, fare_breakdown=bdown))
+            journeys.append(Journey((leg,), total_fare_inr=tot_fare, fare_breakdown=bdown, fetched_at=leg.fetched_at))
         return journeys
-    return find_routes(tt, src, dst, travel_date, earliest, preferred_classes=classes, **kwargs)
+    return find_routes(tt, src, dst, travel_date, earliest, preferred_classes=classes, allow_live=allow_live, **kwargs)
 

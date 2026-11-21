@@ -96,6 +96,7 @@ class SearchRequest(BaseModel):
     sort: str = "fastest"
     limit: int = 5
     preferred_classes: Optional[List[str]] = None
+    unlock: Optional[str] = None
 
 
 class CheckSeatsRequest(BaseModel):
@@ -104,6 +105,20 @@ class CheckSeatsRequest(BaseModel):
     from_station: Optional[str] = None
     to_station: Optional[str] = None
     travel_class: Optional[str] = None
+    unlock: Optional[str] = None
+
+
+def check_live_allowed(request: Request, unlock: Optional[str] = None) -> bool:
+    expected_passcode = os.getenv("DEMO_PASSCODE", "").strip()
+    if not expected_passcode:
+        return True
+    header_passcode = (
+        request.headers.get("x-demo-passcode") or
+        request.headers.get("X-Demo-Passcode") or
+        ""
+    ).strip()
+    query_passcode = (unlock or request.query_params.get("unlock") or "").strip()
+    return header_passcode == expected_passcode or query_passcode == expected_passcode
 
 
 class ChatRequest(BaseModel):
@@ -192,7 +207,9 @@ def search_trains_get(
     sort: str = Query("fastest", description="fastest, earliest, or fewest_changes"),
     limit: int = Query(5, ge=1, le=20),
     preferred_classes: Optional[str] = Query(None, description="Comma-separated class filter, e.g. '3A' or '2A,3A'"),
+    unlock: Optional[str] = Query(None, description="Passcode to unlock live RailCore checks"),
 ):
+    allow_live = check_live_allowed(request, unlock)
     pref_list = [c.strip() for c in preferred_classes.split(",") if c.strip()] if preferred_classes else None
     res = tools.search_trains(
         from_station=from_station,
@@ -202,13 +219,15 @@ def search_trains_get(
         sort=sort,
         limit=limit,
         preferred_classes=pref_list,
+        allow_live=allow_live,
     )
     return res
 
 
 @app.post("/api/search")
 @limiter.limit("30/minute")
-def search_trains_post(request: Request, req: SearchRequest):
+def search_trains_post(request: Request, req: SearchRequest, unlock: Optional[str] = Query(None)):
+    allow_live = check_live_allowed(request, unlock or req.unlock)
     return tools.search_trains(
         from_station=req.from_station,
         to_station=req.to_station,
@@ -217,6 +236,7 @@ def search_trains_post(request: Request, req: SearchRequest):
         sort=req.sort,
         limit=req.limit,
         preferred_classes=req.preferred_classes,
+        allow_live=allow_live,
     )
 
 
@@ -229,7 +249,9 @@ def check_seats_get(
     from_station: Optional[str] = Query(None),
     to_station: Optional[str] = Query(None),
     travel_class: Optional[str] = Query(None),
+    unlock: Optional[str] = Query(None),
 ):
+    allow_live = check_live_allowed(request, unlock)
     session_id = request.headers.get("x-session-id")
     return tools.check_seats(
         train_number=train_number,
@@ -238,11 +260,13 @@ def check_seats_get(
         to_station=to_station,
         travel_class=travel_class,
         session_id=session_id,
+        allow_live=allow_live,
     )
 
 
 @app.post("/api/check-seats")
-def check_seats_post(request: Request, req: CheckSeatsRequest):
+def check_seats_post(request: Request, req: CheckSeatsRequest, unlock: Optional[str] = Query(None)):
+    allow_live = check_live_allowed(request, unlock or req.unlock)
     session_id = request.headers.get("x-session-id")
     return tools.check_seats(
         train_number=req.train_number,
@@ -251,6 +275,7 @@ def check_seats_post(request: Request, req: CheckSeatsRequest):
         to_station=req.to_station,
         travel_class=req.travel_class,
         session_id=session_id,
+        allow_live=allow_live,
     )
 
 

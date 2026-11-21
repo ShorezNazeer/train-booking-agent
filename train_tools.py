@@ -8,6 +8,7 @@ from pathlib import Path
 
 import availability as av
 import fare_engine
+import live_seats
 import segments as seg
 from data_source import Timetable
 from options import plan_options
@@ -42,7 +43,8 @@ def _confirm(prompt: str) -> bool:
 
 def _parse_date(text):
     try:
-        return date.fromisoformat(text)
+        iso_str = live_seats.normalize_iso_date(text)
+        return date.fromisoformat(iso_str)
     except (TypeError, ValueError):
         return None
 
@@ -134,6 +136,7 @@ def _describe_journey(tt: Timetable, journey, travel_date: date) -> dict:
         dep_day = travel_date + timedelta(days=leg.depart // 1440)
         arr_day = travel_date + timedelta(days=leg.arrive // 1440)
         leg_source = getattr(leg, "availability_source", getattr(leg, "source", "simulated_estimate"))
+        leg_fetched_at = getattr(leg, "fetched_at", None)
         pieces = [{
             "from_code": p.from_station,
             "from_name": tt.station_name(p.from_station),
@@ -148,6 +151,7 @@ def _describe_journey(tt: Timetable, journey, travel_date: date) -> dict:
             "fare_breakdown": getattr(p, "fare_breakdown", None),
             "availability_source": getattr(p, "availability_source", getattr(p, "source", leg_source)),
             "source": getattr(p, "source", getattr(p, "availability_source", leg_source)),
+            "fetched_at": getattr(p, "fetched_at", leg_fetched_at),
         } for p in leg.split]
         legs.append({
             "train": leg.train,
@@ -167,8 +171,10 @@ def _describe_journey(tt: Timetable, journey, travel_date: date) -> dict:
             "class_fares": getattr(leg, "class_fares", {}),
             "availability_source": leg_source,
             "source": leg_source,
+            "fetched_at": leg_fetched_at,
         })
     primary_source = legs[0]["availability_source"] if legs else "simulated_estimate"
+    primary_fetched_at = getattr(journey, "fetched_at", legs[0].get("fetched_at") if legs else None)
     return {
         "transfers": journey.transfers,
         "duration_min": journey.duration,
@@ -180,6 +186,7 @@ def _describe_journey(tt: Timetable, journey, travel_date: date) -> dict:
         "fare_breakdown": list(getattr(journey, "fare_breakdown", ())),
         "availability_source": primary_source,
         "source": primary_source,
+        "fetched_at": primary_fetched_at,
         "legs": legs,
     }
 
@@ -187,7 +194,8 @@ def _describe_journey(tt: Timetable, journey, travel_date: date) -> dict:
 # ---------- tools ----------
 def search_trains(from_station: str, to_station: str, travel_date: str,
                   earliest: str = "00:00", sort: str = "fastest",
-                  limit: int = 5, preferred_classes: list = None) -> dict:
+                  limit: int = 5, preferred_classes: list = None,
+                  allow_live: bool = True) -> dict:
     """Direct trains you can ride, or ranked multi-leg alternatives if none."""
     d = _parse_date(travel_date)
     if d is None:
@@ -201,7 +209,8 @@ def search_trains(from_station: str, to_station: str, travel_date: str,
     try:
         options = plan_options(tt, from_station, to_station, d,
                                earliest=e, sort=sort, limit=limit,
-                               preferred_classes=preferred_classes)
+                               preferred_classes=preferred_classes,
+                               allow_live=allow_live)
     except ValueError as err:
         return _fail(str(err))
     if not options:
@@ -214,7 +223,7 @@ def search_trains(from_station: str, to_station: str, travel_date: str,
 
 def check_seats(train_number: str, travel_date: str, from_station: str = None,
                 to_station: str = None, travel_class: str = None,
-                session_id: str = None) -> dict:
+                session_id: str = None, allow_live: bool = True) -> dict:
     """Look inside one train: which classes have seats from one stop to another,
     where each class has seats along the way, and how to cover the trip by
     changing class if no single class does. Without from/to it covers the whole

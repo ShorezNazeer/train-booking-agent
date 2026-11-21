@@ -55,6 +55,25 @@ const state = {
   isChatting: false,
 };
 
+// URL Passcode Gate
+(function initDemoPasscode() {
+  try {
+    const urlParams = new URLSearchParams(window.location.search);
+    const unlock = urlParams.get("unlock");
+    if (unlock) {
+      sessionStorage.setItem("demo_passcode", unlock.trim());
+    }
+  } catch (_) {}
+})();
+
+function getDemoPasscode() {
+  try {
+    return sessionStorage.getItem("demo_passcode") || "";
+  } catch (_) {
+    return "";
+  }
+}
+
 // Utility: Date helpers
 function getTomorrowDate() {
   const d = new Date();
@@ -71,9 +90,37 @@ function getOffsetDate(days) {
 function formatDateStr(isoStr) {
   if (!isoStr) return "";
   try {
-    const parts = isoStr.split("-");
-    const d = new Date(parts[0], parts[1] - 1, parts[2]);
-    return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    const datePart = isoStr.split("T")[0];
+    const parts = datePart.split("-");
+    if (parts.length === 3) {
+      const year = parts[0];
+      const monthIdx = parseInt(parts[1], 10) - 1;
+      const day = parseInt(parts[2], 10);
+      const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      if (monthIdx >= 0 && monthIdx < 12) {
+        return `${day} ${months[monthIdx]} ${year}`;
+      }
+    }
+    return isoStr;
+  } catch (e) {
+    return isoStr;
+  }
+}
+
+function formatDateTime(isoStr) {
+  if (!isoStr) return "";
+  try {
+    const d = new Date(isoStr);
+    if (isNaN(d.getTime())) return isoStr;
+    return d.toLocaleString("en-GB", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      timeZoneName: "short"
+    });
   } catch (e) {
     return isoStr;
   }
@@ -387,8 +434,16 @@ async function executeSearch() {
     if (state.preferredClasses) {
       params.append("preferred_classes", state.preferredClasses);
     }
+    const unlock = getDemoPasscode();
+    if (unlock) {
+      params.append("unlock", unlock);
+    }
+    const headers = {};
+    if (unlock) {
+      headers["X-Demo-Passcode"] = unlock;
+    }
 
-    const res = await fetch(`/api/search?${params.toString()}`);
+    const res = await fetch(`/api/search?${params.toString()}`, { headers });
     const data = await parseJsonResponse(res);
 
     state.isSearching = false;
@@ -453,7 +508,7 @@ function renderJourneys(container, journeys) {
             </div>
           </div>
           <div class="journey-badges-group">
-            ${renderSourceBadge(j.availability_source || (j.legs && j.legs[0]?.availability_source))}
+            ${renderSourceBadge(j.availability_source || (j.legs && j.legs[0]?.availability_source), j.fetched_at || (j.legs && j.legs[0]?.fetched_at))}
             ${j.total_fare_inr ? `<span class="pill-badge pill-price">₹${j.total_fare_inr}</span>` : ""}
             ${isFastest ? '<span class="pill-badge pill-fastest">⚡ Fastest</span>' : ""}
             ${isDirect ? '<span class="pill-badge pill-direct">Direct</span>' : `<span class="pill-badge pill-transfers">${j.transfers} Transfer</span>`}
@@ -510,12 +565,16 @@ function renderJourneys(container, journeys) {
     .join("");
 }
 
-// Data Source Badge Helper: 🟢 Live IRCTC vs ⚪ Offline Estimate
-function renderSourceBadge(source) {
-  const isLive = source === "live_irctc";
-  return `<span class="pill-badge ${isLive ? "pill-source-live" : "pill-source-offline"}" title="${
-    isLive ? "Verified live with IRCTC RapidAPI / cache" : "Simulated offline timetable estimate"
-  }">${isLive ? "🟢 Live IRCTC" : "⚪ Offline Estimate"}</span>`;
+// Data Source Badge Helper: 🟢 Live · Data from RailCore vs ⚪ Offline Estimate
+function renderSourceBadge(source, fetchedAt = null) {
+  const isLive = source === "live_railcore" || source === "live_irctc";
+  if (isLive) {
+    const timeTooltip = fetchedAt
+      ? `Fetched: ${formatDateTime(fetchedAt)} via RailCore API`
+      : "Verified live with RailCore API";
+    return `<span class="pill-badge pill-source-live" title="${escapeHtml(timeTooltip)}">🟢 Live · Data from <a href="https://railcore.tech" target="_blank" rel="noopener noreferrer" class="railcore-attr-link" onclick="event.stopPropagation()">RailCore</a></span>`;
+  }
+  return `<span class="pill-badge pill-source-offline" title="Simulated offline timetable estimate">⚪ Offline Estimate</span>`;
 }
 
 // Visual Segmented Bar for Mid-Route Class Change
@@ -543,7 +602,7 @@ function renderSegmentedBar(journey) {
               <div class="slice-route">
                 <span class="slice-badge">${slice.travel_class}</span>
                 <span>${slice.from_code} ➔ ${slice.to_code}</span>
-                <span style="margin-left: auto;">${renderSourceBadge(slice.availability_source || slice.source)}</span>
+                <span style="margin-left: auto;">${renderSourceBadge(slice.availability_source || slice.source, slice.fetched_at)}</span>
               </div>
               <div class="slice-seats">
                 <span>${slice.seats} seats (${slice.departs} - ${slice.arrives})</span>
@@ -574,7 +633,7 @@ function renderTransfersTimeline(journey) {
         <div>
           <span class="train-badge-num">${leg.train}</span>
           <strong style="margin-left: 0.5rem;">${leg.train_name}</strong>
-          <span style="margin-left: 0.5rem;">${renderSourceBadge(leg.availability_source || leg.source)}</span>
+          <span style="margin-left: 0.5rem;">${renderSourceBadge(leg.availability_source || leg.source, leg.fetched_at)}</span>
           <div style="font-size: 0.78rem; color: var(--text-secondary); margin-top: 0.2rem;">
             ${leg.from_name} (${leg.departs}) ➔ ${leg.to_name} (${leg.arrives})
           </div>
@@ -825,7 +884,7 @@ function initiateBooking(journeyIndex, preClass = null) {
       </div>
       <div class="summary-row">
         <span class="summary-label">Availability Source</span>
-        <span class="summary-val">${renderSourceBadge(journey.availability_source || (journey.legs && journey.legs[0]?.availability_source))}</span>
+        <span class="summary-val">${renderSourceBadge(journey.availability_source || (journey.legs && journey.legs[0]?.availability_source), journey.fetched_at || (journey.legs && journey.legs[0]?.fetched_at))}</span>
       </div>
       <div class="summary-row">
         <span class="summary-label">Total Duration</span>
@@ -1150,7 +1209,15 @@ async function inspectTrainDetails(train, date, from, to) {
       from_station: from || "",
       to_station: to || "",
     });
-    const res = await fetch(`/api/check-seats?${params.toString()}`);
+    const unlock = getDemoPasscode();
+    if (unlock) {
+      params.append("unlock", unlock);
+    }
+    const headers = {};
+    if (unlock) {
+      headers["X-Demo-Passcode"] = unlock;
+    }
+    const res = await fetch(`/api/check-seats?${params.toString()}`, { headers });
     const data = await parseJsonResponse(res);
 
     if (!data.success) {
@@ -1169,7 +1236,7 @@ async function inspectTrainDetails(train, date, from, to) {
         <div class="booking-summary-box">
           <div class="summary-row">
             <span class="summary-label">Availability Source</span>
-            <span class="summary-val">${renderSourceBadge(data.availability_source || data.source || 'simulated_estimate')}</span>
+            <span class="summary-val">${renderSourceBadge(data.availability_source || data.source || 'simulated_estimate', data.fetched_at)}</span>
           </div>
           <div class="summary-row">
             <span class="summary-label">Full Route Coverage</span>

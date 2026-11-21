@@ -773,6 +773,19 @@ body {
   letter-spacing: 0.03em;
 }
 
+.railcore-attr-link {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  font-weight: 700;
+  transition: opacity 0.15s ease;
+}
+
+.railcore-attr-link:hover {
+  opacity: 0.8;
+  text-decoration-style: solid;
+}
+
 .pill-source-offline {
   background: rgba(148, 163, 184, 0.14);
   color: #94a3b8;
